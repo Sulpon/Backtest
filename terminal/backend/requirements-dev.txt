@@ -1,0 +1,12 @@
+# Local-dev / offline-only dependencies - never installed on Vercel (see
+# ../vercel.json, which installs only requirements.txt). Install both files
+# for local development:
+#   pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+
+uvicorn[standard]  # runs the local dev server (start.bat) - Vercel provides its own ASGI runtime
+pandas             # build_db.py / app/structure_engine.py
+numpy              # build_db.py / app/structure_engine.py
+python-dotenv      # app/marketdata/config.py (offline provider sync only, not imported by the live API)
+httpx              # app/marketdata/providers/* (same - offline sync only)
+pytest             # tests/

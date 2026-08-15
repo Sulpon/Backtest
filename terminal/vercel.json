@@ -11,10 +11,10 @@
       "root": "backend",
       "framework": "fastapi",
       "entrypoint": "app.main:app",
-      "installCommand": "pip install -r requirements.txt",
+      "installCommand": "pip install -r requirements.txt && python fetch_db.py",
       "functions": {
         "app/main.py": {
-          "excludeFiles": "{tests/**,.pytest_cache/**,.venv/**,pytest.ini}"
+          "excludeFiles": "{tests/**,.pytest_cache/**,.venv/**,pytest.ini,requirements-dev.txt,build_db.py,sync_market_data.py,fetch_db.py,.env.example,README.md,.gitignore}"
         }
       }
     }
