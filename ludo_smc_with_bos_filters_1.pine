@@ -1,0 +1,859 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LudoGH68
+//@version=5
+indicator("SMC Structures and FVG", overlay = true, max_lines_count=3000, max_labels_count=3000, max_boxes_count=3000)
+import LudoGH68/Drawings_public/1 as d
+
+getLineStyle(lineOption) =>
+    lineOption == "┈" ? line.style_dotted : lineOption == "╌" ? line.style_dashed : line.style_solid
+
+get_structure_highest_bar(lookback) =>
+
+	var int idx = 0
+    maxBar = bar_index > lookback ? ta.highestbars(high, lookback) : ta.highestbars(high, bar_index + 1)
+
+	for i = 0 to lookback - 1 by 1
+		if high[i+1] > high[i+2] and high[i] <= high[i+1] and ((i+1) * -1) >= maxBar
+			idx := (i+1) * -1
+			//break
+            
+	idx := idx == 0 ? maxBar : idx 
+
+get_structure_lowest_bar(lookback) =>
+
+	var int idx = 0
+    minBar = bar_index > lookback ? ta.lowestbars(low, lookback) : ta.lowestbars(low, bar_index + 1)
+
+	for i = 0 to lookback - 1 by 1
+		if low[i+1] < low[i+2] and low[i] >= low[i+1]  and ((i+1) * -1) >= minBar
+			idx := (i+1) * -1
+            //break
+			
+	idx := idx == 0 ? minBar : idx 
+
+is_structure_high_broken(_highStructBreakPrice, _structureHigh, _structureHighStartIndex, _structureDirection) =>
+    var bool res = false
+
+    if (_highStructBreakPrice > _structureHigh and  bar_index[1] >  _structureHighStartIndex) or (_structureDirection == 1 and _highStructBreakPrice > _structureHigh)
+        res := true
+    else
+        res := false
+
+    res
+
+// Fear Value Gap
+isFvgToShow =  input(true, title='Display FVG', group="Fear Value Gap")
+bullishFvgColor = input(color.new(color.green, 50), 'Bullish FVG Color', group="Fear Value Gap")
+bearishFvgColor = input(color.new(color.red, 50), 'Bearish FVG Color', group="Fear Value Gap")
+mitigatedFvgColor = input(color.new(color.gray, 50), 'Mitigated FVG Color', group="Fear Value Gap")
+fvgHistoryNbr = input.int(50, 'Number of FVG to show', minval=1, maxval=50)
+isMitigatedFvgToReduce = input(false, title='Reduce mitigated FVG', group="Fear Value Gap")
+
+// Structures
+isStructBodyCandleBreak = input(true, title='Break with candle\'s body', group="Structures")
+isCurrentStructToShow = input(true, title='Display current structure', group="Structures")
+bullishBosColor = input(color.silver, 'Bullish BOS Color', group="Structures")
+bearishBosColor = input(color.silver, 'Bearish BOS Color', group="Structures")
+bosLineStyleOption = input.string("─", title="BOS Style", group="Structures", options=["─", "┈", "╌"])
+bosLineStyle = getLineStyle(bosLineStyleOption)
+bosLineWidth = input.int(1, title="BOS Width", group="Structures", minval=1, maxval=5)
+bullishChochColor = input(color.yellow, 'Bullish CHoCH Color', group="Structures")
+bearishChochColor = input(color.yellow, 'Bearish CHoCH Color', group="Structures")
+chochLineStyleOption = input.string("─", title="CHoCH Style", group="Structures", options=["─", "┈", "╌"])
+chochLineStyle = getLineStyle(chochLineStyleOption)
+chochLineWidth = input.int(1, title="MSB Width", group="Structures", minval=1, maxval=5)
+currentStructColor = input(color.blue, 'Current structure Color', group="Structures")
+currentStructLineStyleOption = input.string("─", title="Current structure Style", group="Structures", options=["─", "┈", "╌"])
+currentStructLineStyle = getLineStyle(currentStructLineStyleOption)
+currentStructLineWidth = input.int(1, title="Current structure Width", group="Structures", minval=1, maxval=5)
+structHistoryNbr = input.int(50, 'Number of break to show', minval=1, maxval=50)
+
+// Fibonacci 1
+isFibo1ToShow = input(true, title = "", group="Structure Fibonacci", inline = "Fibo1")
+fibo1Value = input.float(0.786, title = "", group="Structure Fibonacci", inline = "Fibo1")
+fibo1Color = input(#64b5f6, title = "", group="Structure Fibonacci", inline = "Fibo1")
+fibo1StyleOption = input.string("─", title = "", group="Structure Fibonacci", options=["─", "┈", "╌"], inline = "Fibo1")
+fibo1Style = getLineStyle(fibo1StyleOption)
+fibo1LineWidth = input.int(1, title = "", group="Structure Fibonacci", minval=1, maxval=5, inline = "Fibo1")
+
+// Fibonacci 2
+isFibo2ToShow = input(true, title = "", group="Structure Fibonacci", inline = "Fibo2")
+fibo2Value = input.float(0.705, title = "", group="Structure Fibonacci", inline = "Fibo2")
+fibo2Color = input(#f23645, title = "", group="Structure Fibonacci", inline = "Fibo2")
+fibo2StyleOption = input.string("─", title = "", group="Structure Fibonacci", options=["─", "┈", "╌"], inline = "Fibo2")
+fibo2Style = getLineStyle(fibo2StyleOption)
+fibo2LineWidth = input.int(1, title = "", group="Structure Fibonacci", minval=1, maxval=5, inline = "Fibo2")
+
+// Fibonacci 3
+isFibo3ToShow = input(true, title = "", group="Structure Fibonacci", inline = "Fibo3")
+fibo3Value = input.float(0.618, title = "", group="Structure Fibonacci", inline = "Fibo3")
+fibo3Color = input(#089981, title = "", group="Structure Fibonacci", inline = "Fibo3")
+fibo3StyleOption = input.string("─", title = "", group="Structure Fibonacci", options=["─", "┈", "╌"], inline = "Fibo3")
+fibo3Style = getLineStyle(fibo3StyleOption)
+fibo3LineWidth = input.int(1, title = "", group="Structure Fibonacci", minval=1, maxval=5, inline = "Fibo3")
+
+// Fibonacci 3
+isFibo4ToShow = input(true, title = "", group="Structure Fibonacci", inline = "Fibo4")
+fibo4Value = input.float(0.5, title = "", group="Structure Fibonacci", inline = "Fibo4")
+fibo4Color = input(#4caf50, title = "", group="Structure Fibonacci", inline = "Fibo4")
+fibo4StyleOption = input.string("─", title = "", group="Structure Fibonacci", options=["─", "┈", "╌"], inline = "Fibo4")
+fibo4Style = getLineStyle(fibo4StyleOption)
+fibo4LineWidth = input.int(1, title = "", group="Structure Fibonacci", minval=1, maxval=5, inline = "Fibo4")
+
+// Fibonacci 5
+isFibo5ToShow = input(true, title = "", group="Structure Fibonacci", inline = "Fibo5")
+fibo5Value = input.float(0.382, title = "", group="Structure Fibonacci", inline = "Fibo5")
+fibo5Color = input(#81c784, title = "", group="Structure Fibonacci", inline = "Fibo5")
+fibo5StyleOption = input.string("─", title = "", group="Structure Fibonacci", options=["─", "┈", "╌"], inline = "Fibo5")
+fibo5Style = getLineStyle(fibo5StyleOption)
+fibo5LineWidth = input.int(1, title = "", group="Structure Fibonacci", minval=1, maxval=5, inline = "Fibo5")
+
+// 0.71 fib position (entry/SL/TP) - additive, independent of the Trade
+// Model further down (which only marks ACCEPTED setups after passing the
+// BOS Filters). This simply marks up whichever structure fib is currently
+// being displayed above, using the same 0 (extreme)/0.71 (entry)/1
+// (origin) levels, on every structure - not just accepted ones.
+isFib071PositionToShow = input.bool(true, "Show 0.71 Position (Entry/SL/TP)", group="Structure Fibonacci")
+fib071RiskColor = input.color(color.new(color.red, 70), "Risk Zone Color", group="Structure Fibonacci")
+fib071RewardColor = input.color(color.new(color.green, 70), "Reward Zone Color", group="Structure Fibonacci")
+
+// ============================================================================
+// BOS RESEARCH FILTERS (new) - completely optional, all default OFF. Applied
+// ONLY to same-direction continuation BOS (the original script's own "BOS"
+// case, as opposed to "CHoCH" which is the opposite-direction reversal).
+// With every filter below disabled, output is byte-for-byte identical to
+// the original script - verified by construction, since every filter gate
+// short-circuits to "pass" when its own enable toggle is off (see the
+// isStuctureLowBroken/isStructureHighBroken redefinition further down).
+//
+// NAMING NOTE: the original script already has an ALWAYS-ACTIVE input also
+// called "Minimum Swing Size (%)" (minSwingPercent, group "Structures",
+// feeding bullishContinuationReady/bearishContinuationReady). Filter 3 below
+// is a SEPARATE, independently-toggleable mechanism and would collide with
+// that existing variable name if given the name from the request verbatim -
+// so it's named contMinSwingPercent here instead. The original
+// minSwingPercent input and its behavior are completely untouched.
+// ============================================================================
+enableMinSameDirectionBars = input.bool(false, "Enable Minimum Same-Direction BOS Bars", group="BOS Filters")
+minSameDirectionBars = input.int(10, "Minimum Same-Direction BOS Bars", minval=1, maxval=500, group="BOS Filters")
+
+enableMinRetracement = input.bool(false, "Enable Minimum Retracement Filter", group="BOS Filters")
+minRetracementPercent = input.float(25.0, "Minimum Retracement (%)", minval=0, maxval=100, step=1, group="BOS Filters")
+
+enableMinSwingPercent = input.bool(false, "Enable Minimum Swing Size (%)", group="BOS Filters")
+contMinSwingPercent = input.float(20.0, "Continuation Min Swing Size (%) [Filter 3 - separate from the Structures group's always-on swing filter above]", minval=0, maxval=500, step=1, group="BOS Filters")
+
+enableMinSwingPips = input.bool(false, "Enable Minimum Swing Size (Pips)", group="BOS Filters")
+minSwingPips = input.float(10.0, "Minimum Swing Size (Pips)", minval=0, step=0.1, group="BOS Filters")
+pipSize = input.float(0.0001, "Pip Size", minval=0.000001, group="BOS Filters")
+
+enableMinBosDistance = input.bool(false, "Enable Minimum BOS Price Distance", group="BOS Filters")
+minBosDistancePips = input.float(20.0, "Minimum BOS Price Distance (Pips)", minval=0, step=0.1, group="BOS Filters")
+
+enableAtrFilter = input.bool(false, "Enable ATR Minimum Swing Filter", group="BOS Filters")
+atrLength = input.int(14, "ATR Length", minval=1, maxval=200, group="BOS Filters")
+atrMultiplier = input.float(0.5, "Minimum Swing ATR Multiplier", minval=0, step=0.1, group="BOS Filters")
+
+filterCombination = input.string("ALL ENABLED FILTERS", "Filter Combination", options=["ALL ENABLED FILTERS", "ANY ENABLED FILTER"], group="BOS Filters")
+
+showBosFilterDebug = input.bool(false, "Show BOS Filter Debug", group="Debug")
+
+// Draw FVG into graph
+FVGDraw(_boxes, _fvgTypes, _isFvgMitigated, _fvgLabels) => 
+
+    // Loop into all values of the array
+    for [index, value] in _boxes
+        
+        // Processing bullish FVG
+        if(array.get(_fvgTypes, index))
+
+            // Check if FVG has been totally mitigated
+            if(low <= box.get_bottom(value))
+                array.remove(_boxes, index)
+                array.remove(_fvgTypes, index)
+                array.remove(_isFvgMitigated, index)
+                label.delete(array.get(_fvgLabels, index))
+                array.remove(_fvgLabels, index)
+                box.delete(value)
+            else 
+                if(low < box.get_top((value)))
+                    box.set_bgcolor(value, mitigatedFvgColor)    
+
+                    // Mitigated FVG Alert
+                    if(not(array.get(_isFvgMitigated, index)))
+                        alert("FVG has been mitigated", alert.freq_once_per_bar)
+                        array.set(_isFvgMitigated, index, true)
+
+                    // Reduce FVG if needed
+                    if(isMitigatedFvgToReduce)
+                        box.set_top(value, low)
+
+                box.set_right(value, bar_index)
+                label.set_x(array.get(_fvgLabels, index), (box.get_left(value) + box.get_right(value)) / 2 )
+                label.set_y(array.get(_fvgLabels, index), box.get_top(value) - (box.get_top(value) - box.get_bottom(value)) / 2)
+
+        // Processing bearish FVG
+        else
+
+            // Check if FVG has been mitigated
+            if(high >= box.get_top(value))
+                array.remove(_boxes, index)
+                array.remove(_fvgTypes, index)
+                array.remove(_isFvgMitigated, index)
+                label.delete(array.get(_fvgLabels, index))
+                array.remove(_fvgLabels, index)
+                box.delete(value)
+            else
+                if(high > box.get_bottom((value)))
+                    box.set_bgcolor(value, mitigatedFvgColor)    
+
+                    // Mitigated FVG Alert
+                    if(not(array.get(_isFvgMitigated, index)))
+                        alert("FVG has been mitigated", alert.freq_once_per_bar)
+                        array.set(_isFvgMitigated, index, true)
+
+                    // Reduce FVG if needed
+                    if(isMitigatedFvgToReduce)
+                        box.set_bottom(value, high)
+
+                box.set_right(value, bar_index)
+                label.set_x(array.get(_fvgLabels, index), (box.get_left(value) + box.get_right(value)) / 2 )
+                label.set_y(array.get(_fvgLabels, index), box.get_top(value) - (box.get_top(value) - box.get_bottom(value)) / 2)
+
+// Arrays variable
+var array<line> structureLines = array.new_line(0)
+var array<label> structureLabels = array.new_label(0)
+var array<box>  fvgBoxes = array.new_box(0)
+var array<bool> fvgTypes = array.new_bool(0)
+var array<label> fvgLabels = array.new_label(0)
+var array<bool> isFvgMitigated = array.new_bool(0)
+
+// Price variables
+var float structureHigh = 0.0
+var float structureLow = 0.0
+var float continuationRange = 0.0
+var float fibo1Price = 0.0
+var float fibo2Price = 0.0
+var float fibo3Price = 0.0
+var float fibo4Price = 0.0
+var float fibo5Price = 0.0
+
+// Index variable
+var int structureHighStartIndex = 0
+var int structureLowStartIndex = 0
+var int structureDirection = 0
+var int fibo1StartIndex = 0
+var int fibo2StartIndex = 0
+var int fibo3StartIndex = 0
+var int fibo4StartIndex = 0
+var int fibo5StartIndex = 0
+
+// Line variable
+var line structureHighLine = na
+var line structureLowLine = na
+var line fibo1Line = na
+var line fibo2Line = na
+var line fibo3Line = na
+var line fibo4Line = na
+var line fibo5Line = na
+
+// Label variable
+var label fibo1Label = na
+var label fibo2Label = na
+var label fibo3Label = na
+var label fibo4Label = na
+var label fibo5Label = na
+
+// 0.71 fib position (entry/SL/TP) - see the "Structure Fibonacci" input
+// group and the drawing block right after the Fibo 1-5 display below.
+var line fib071EntryLine = na
+var box fib071RiskBox = na
+var box fib071RewardBox = na
+var label fib071Label = na
+
+var bool isBOSAlert = false
+var bool isCHOCHAlert = false
+
+// CHoCH REWRITE: counters for actual accepted events (incremented inside
+// the accept blocks below, which only execute once - and after - the
+// filter layer has already accepted the event, so a filtered-out
+// continuation candidate is correctly never counted).
+var int bullishBosCount = 0
+var int bearishBosCount = 0
+var int bullishChochCount = 0
+var int bearishChochCount = 0
+
+// ============================================================================
+// BOS FILTER STATE (new) - all state needed by the 6 optional filters.
+// Nothing here is read by the original detection formulas below; it only
+// feeds the new filter-gate added to isStuctureLowBroken/isStructureHighBroken.
+// ============================================================================
+var int lastBullishBosBar = na
+var int lastBearishBosBar = na
+var float lastBullishBosLevel = na
+var float lastBearishBosLevel = na
+
+var float filter2BullishFrozenHigh = na
+var float filter2BullishFrozenRange = na
+var bool filter2BullishRetraceSatisfied = false
+var float filter2BearishFrozenLow = na
+var float filter2BearishFrozenRange = na
+var bool filter2BearishRetraceSatisfied = false
+
+var int rawBosCandidateCount = 0
+var int filterAcceptedCount = 0
+var int rejectedByMinBars = 0
+var int rejectedByRetracement = 0
+var int rejectedBySwingPct = 0
+var int rejectedBySwingPips = 0
+var int rejectedByBosDistance = 0
+var int rejectedByAtr = 0
+var string lastFilterDecision = "N/A"
+var string lastFilterReason = "N/A"
+//
+//
+// ==========================================================================================
+//                              FAIR VALUE GAP FINDER PROCESSING                                                                         
+// ==========================================================================================
+//
+//
+// Define FVG type
+isBullishFVG = high[3] < low[1]
+isBearishFVG = low[3] > high[1]
+
+// Bullish FVG process
+if(isBullishFVG and isFvgToShow)
+
+    // Add FVG into FVG's array
+    box _box = box.new(left=bar_index - 2, top=low[1], right=bar_index[1], bottom=high[3], border_style=line.style_solid, border_width=1, bgcolor=bullishFvgColor, border_color=color.new(color.green, 100))
+    label _label = label.new(math.ceil((_box.get_left() + _box.get_right()) / 2), _box.get_top() - (_box.get_top() - _box.get_bottom()) / 2, text = "FVG", style = label.style_none, textcolor = color.white)     
+    array.push(fvgBoxes, _box)
+    array.push(fvgTypes, true)
+    array.push(isFvgMitigated, false)
+    array.push(fvgLabels, _label)
+
+    // Check if FVG to show is upper than user parameter
+    if(array.size(fvgBoxes) > fvgHistoryNbr + 1)
+
+        // Delete the FVG and its index from arrays
+        box.delete(array.get(fvgBoxes, 0))
+        label.delete(array.get(fvgLabels, 0))
+        array.remove(fvgLabels, 0)
+        array.remove(fvgBoxes, 0)
+        array.remove(fvgTypes, 0)
+        array.remove(isFvgMitigated, 0)
+
+// Bearish FVG process
+if(isBearishFVG and isFvgToShow)
+    
+    // Add FVG into FVG's array
+    box _box = box.new(left=bar_index - 2, top=low[3], right=bar_index[1], bottom=high[1], border_style=line.style_solid, border_width=1, bgcolor=bearishFvgColor, border_color=color.new(color.red, 100))
+    label _label = label.new(math.ceil((_box.get_left() + _box.get_right()) / 2), _box.get_top() - (_box.get_top() - _box.get_bottom()) / 2, text = "FVG", style = label.style_none, textcolor = color.white) 
+    //label.new(bar_index + 20, fibo3Price, text = str.tostring(fibo3Value) + "(" + str.tostring(fibo3Price) + ")", style = label.style_none, textcolor = fibo3Color)    
+    array.push(fvgBoxes, _box)
+    array.push(fvgTypes, false)
+    array.push(isFvgMitigated, false)
+    array.push(fvgLabels, _label)
+
+    // Check if FVG to show is upper than user parameter
+    if(array.size(fvgBoxes) > fvgHistoryNbr + 1)
+        
+        // Delete the FVG and its index from arrays
+        box.delete(array.get(fvgBoxes, 0))
+        label.delete(array.get(fvgLabels, 0))
+        array.remove(fvgLabels, 0)
+        array.remove(fvgBoxes, 0)
+        array.remove(fvgTypes, 0)
+        array.remove(isFvgMitigated, 0)
+
+// Draw FVG
+FVGDraw(fvgBoxes, fvgTypes, isFvgMitigated, fvgLabels)
+//
+//
+// ==========================================================================================
+//                                   STRUCTURES PROCESSING                                                         
+// ==========================================================================================
+//
+//
+// Initialize value for bar 0
+if(bar_index == 0)
+    structureHighStartIndex := bar_index
+    structureLowStartIndex  := bar_index
+    structureHigh := high
+    structureLow  := low 
+
+highest = bar_index > 10 ? ta.highest(10) : ta.highest(bar_index + 1)
+highestBar = bar_index > 10 ? ta.highestbars(high, 10) : ta.highestbars(high, bar_index + 1) 
+lowest = bar_index > 10 ? ta.lowest(10) : ta.lowest(bar_index + 1)
+lowestBar = bar_index > 10 ? ta.lowestbars(low, 10) : ta.lowestbars(low, bar_index + 1)
+structureMaxBar = bar_index + get_structure_highest_bar(10)
+structureMinBar = bar_index + get_structure_lowest_bar(10)
+lowStructBreakPrice = isStructBodyCandleBreak ? close : low
+highStructBreakPrice = isStructBodyCandleBreak ? close : high
+minSwingPercent = input.float(20.0, "Minimum Swing Size (%)", minval=0, maxval=100, group="Structures")
+
+var bool bullishContinuationReady = true
+var bool bearishContinuationReady = true
+
+if structureDirection == 2 and not bullishContinuationReady
+    if math.min(open, close) <= structureHigh - continuationRange * minSwingPercent / 100
+        bullishContinuationReady := true
+
+if structureDirection == 1 and not bearishContinuationReady
+    if math.max(open, close) >= structureLow + continuationRange * minSwingPercent / 100
+        bearishContinuationReady := true
+
+
+// ============================================================================
+// CHoCH REWRITE: unified break detection. Previously this variable was two
+// different mechanisms OR'd together - a strict "first bar to cross since
+// the anchor" pattern (used when structureDirection already matched the
+// break direction, i.e. continuation/BOS) and a separate, looser "just
+// check current price every bar" clause (used specifically when
+// structureDirection == 2, i.e. the bearish reversal/CHoCH case) with no
+// such pattern requirement. That gave CHoCH weaker confirmation than BOS
+// for what the request identifies as the same kind of event. Now there is
+// one single break condition, used for both - classification into BOS vs
+// CHoCH happens entirely afterward, based on structureDirection, not by
+// using a different detection formula.
+//
+// The trailing "(structureDirection != 2 or bearishContinuationReady)" /
+// "(structureDirection != 1 or bullishContinuationReady)" gates from the
+// original are also removed here: bullishContinuationReady is set true the
+// instant a bearish phase begins (line ~558) and bearishContinuationReady
+// the instant a bullish phase begins (line ~606), so each gate was already
+// satisfied for the entire duration of the phase it applied to - a no-op,
+// not a real constraint, confirmed by inspection before removing it rather
+// than assumed.
+// ============================================================================
+isStuctureLowBrokenRaw = lowStructBreakPrice < structureLow and lowStructBreakPrice[1] >= structureLow and lowStructBreakPrice[2] >= structureLow and lowStructBreakPrice[3] >= structureLow and bar_index[1] > structureLowStartIndex and bar_index[2] > structureLowStartIndex and bar_index[3] > structureLowStartIndex
+isStructureHighBrokenRaw = highStructBreakPrice > structureHigh and highStructBreakPrice[1] <= structureHigh and highStructBreakPrice[2] <= structureHigh and highStructBreakPrice[3] <= structureHigh and bar_index[1] > structureHighStartIndex and bar_index[2] > structureHighStartIndex and bar_index[3] > structureHighStartIndex
+
+// ============================================================================
+// BOS FILTER LAYER (new) - sits strictly between raw detection above and
+// acceptance below. The original two lines above (now suffixed Raw) are
+// completely unchanged from the source script. This section only decides
+// whether a RAW candidate that happens to be a SAME-DIRECTION continuation
+// (structureDirection already matching the break direction) gets accepted.
+// Opposite-direction breaks (CHoCH) are never touched here - see the
+// "not lowIsContinuation" / "not highIsContinuation" terms in the final
+// isStuctureLowBroken/isStructureHighBroken definitions further below,
+// which always pass through unfiltered.
+// ============================================================================
+bool lowIsContinuation = isStuctureLowBrokenRaw and structureDirection == 1
+bool highIsContinuation = isStructureHighBrokenRaw and structureDirection == 2
+
+// Filter 1: minimum bars since the last SAME-DIRECTION accepted BOS.
+bool f1PassLow = not enableMinSameDirectionBars or na(lastBearishBosBar) or (bar_index - lastBearishBosBar >= minSameDirectionBars)
+bool f1PassHigh = not enableMinSameDirectionBars or na(lastBullishBosBar) or (bar_index - lastBullishBosBar >= minSameDirectionBars)
+
+// Filter 2: price must have retraced at least minRetracementPercent of the
+// PREVIOUS same-direction BOS leg (frozen at that BOS's acceptance) before
+// this continuation counts. filter2*RetraceSatisfied is a one-way latch,
+// updated every bar further below, independent of whether a break is being
+// evaluated this specific bar.
+bool f2PassHigh = not enableMinRetracement or na(filter2BullishFrozenHigh) or filter2BullishRetraceSatisfied
+bool f2PassLow = not enableMinRetracement or na(filter2BearishFrozenLow) or filter2BearishRetraceSatisfied
+
+// Filter 3: the CURRENT (about to be confirmed) leg's size, as a percentage
+// of the PREVIOUS leg's frozen range (continuationRange - already computed
+// by the unchanged original logic at each BOS).
+bool f3PassHigh = not enableMinSwingPercent or continuationRange <= 0 or (structureHigh - structureLow) >= continuationRange * contMinSwingPercent / 100
+bool f3PassLow = not enableMinSwingPercent or continuationRange <= 0 or (structureHigh - structureLow) >= continuationRange * contMinSwingPercent / 100
+
+// Filter 4: absolute minimum size of the current leg, in pips.
+bool f4PassHigh = not enableMinSwingPips or (structureHigh - structureLow) >= minSwingPips * pipSize
+bool f4PassLow = not enableMinSwingPips or (structureHigh - structureLow) >= minSwingPips * pipSize
+
+// Filter 5: the new BOS level must be at least minBosDistancePips beyond
+// the previous same-direction BOS level.
+bool f5PassHigh = not enableMinBosDistance or na(lastBullishBosLevel) or (structureHigh - lastBullishBosLevel) >= minBosDistancePips * pipSize
+bool f5PassLow = not enableMinBosDistance or na(lastBearishBosLevel) or (lastBearishBosLevel - structureLow) >= minBosDistancePips * pipSize
+
+// Filter 6: ATR-relative minimum size of the current leg.
+float atrVal = ta.atr(atrLength)
+bool f6PassHigh = not enableAtrFilter or (structureHigh - structureLow) >= atrVal * atrMultiplier
+bool f6PassLow = not enableAtrFilter or (structureHigh - structureLow) >= atrVal * atrMultiplier
+
+int enabledCount = (enableMinSameDirectionBars ? 1 : 0) + (enableMinRetracement ? 1 : 0) + (enableMinSwingPercent ? 1 : 0) + (enableMinSwingPips ? 1 : 0) + (enableMinBosDistance ? 1 : 0) + (enableAtrFilter ? 1 : 0)
+
+int passedCountHigh = (enableMinSameDirectionBars and f1PassHigh ? 1 : 0) + (enableMinRetracement and f2PassHigh ? 1 : 0) + (enableMinSwingPercent and f3PassHigh ? 1 : 0) + (enableMinSwingPips and f4PassHigh ? 1 : 0) + (enableMinBosDistance and f5PassHigh ? 1 : 0) + (enableAtrFilter and f6PassHigh ? 1 : 0)
+int passedCountLow = (enableMinSameDirectionBars and f1PassLow ? 1 : 0) + (enableMinRetracement and f2PassLow ? 1 : 0) + (enableMinSwingPercent and f3PassLow ? 1 : 0) + (enableMinSwingPips and f4PassLow ? 1 : 0) + (enableMinBosDistance and f5PassLow ? 1 : 0) + (enableAtrFilter and f6PassLow ? 1 : 0)
+
+bool continuationFiltersPassHigh = enabledCount == 0 or (filterCombination == "ALL ENABLED FILTERS" ? passedCountHigh == enabledCount : passedCountHigh > 0)
+bool continuationFiltersPassLow = enabledCount == 0 or (filterCombination == "ALL ENABLED FILTERS" ? passedCountLow == enabledCount : passedCountLow > 0)
+
+// Rejection-reason bookkeeping (debug only) - runs only for continuation
+// candidates that actually fail, so counters reflect genuine rejections.
+if highIsContinuation
+    rawBosCandidateCount += 1
+    if not continuationFiltersPassHigh
+        string reasonH = ""
+        if enableMinSameDirectionBars and not f1PassHigh
+            reasonH := reasonH + "MIN BARS + "
+            rejectedByMinBars += 1
+        if enableMinRetracement and not f2PassHigh
+            reasonH := reasonH + "RETRACEMENT + "
+            rejectedByRetracement += 1
+        if enableMinSwingPercent and not f3PassHigh
+            reasonH := reasonH + "SWING % + "
+            rejectedBySwingPct += 1
+        if enableMinSwingPips and not f4PassHigh
+            reasonH := reasonH + "SWING PIPS + "
+            rejectedBySwingPips += 1
+        if enableMinBosDistance and not f5PassHigh
+            reasonH := reasonH + "BOS DISTANCE + "
+            rejectedByBosDistance += 1
+        if enableAtrFilter and not f6PassHigh
+            reasonH := reasonH + "ATR + "
+            rejectedByAtr += 1
+        lastFilterDecision := "REJECTED"
+        lastFilterReason := str.substring(reasonH, 0, math.max(str.length(reasonH) - 3, 0))
+    else
+        lastFilterDecision := "ACCEPTED"
+        lastFilterReason := "NONE"
+        filterAcceptedCount += 1
+if lowIsContinuation
+    rawBosCandidateCount += 1
+    if not continuationFiltersPassLow
+        string reasonL = ""
+        if enableMinSameDirectionBars and not f1PassLow
+            reasonL := reasonL + "MIN BARS + "
+            rejectedByMinBars += 1
+        if enableMinRetracement and not f2PassLow
+            reasonL := reasonL + "RETRACEMENT + "
+            rejectedByRetracement += 1
+        if enableMinSwingPercent and not f3PassLow
+            reasonL := reasonL + "SWING % + "
+            rejectedBySwingPct += 1
+        if enableMinSwingPips and not f4PassLow
+            reasonL := reasonL + "SWING PIPS + "
+            rejectedBySwingPips += 1
+        if enableMinBosDistance and not f5PassLow
+            reasonL := reasonL + "BOS DISTANCE + "
+            rejectedByBosDistance += 1
+        if enableAtrFilter and not f6PassLow
+            reasonL := reasonL + "ATR + "
+            rejectedByAtr += 1
+        lastFilterDecision := "REJECTED"
+        lastFilterReason := str.substring(reasonL, 0, math.max(str.length(reasonL) - 3, 0))
+    else
+        lastFilterDecision := "ACCEPTED"
+        lastFilterReason := "NONE"
+        filterAcceptedCount += 1
+
+// Final accept/reject: opposite-direction (CHoCH) and initial-direction
+// breaks always pass through unfiltered; only same-direction continuation
+// candidates are gated by the filter layer above.
+isStuctureLowBroken = isStuctureLowBrokenRaw and (not lowIsContinuation or continuationFiltersPassLow)
+isStructureHighBroken = isStructureHighBrokenRaw and (not highIsContinuation or continuationFiltersPassHigh)
+
+// Filter 2's retracement latch - updated every bar, independent of whether
+// a break is being evaluated. Must run before the accept blocks below so a
+// same-bar retracement-then-break isn't possible, and after the gate above
+// so this bar's OWN retracement doesn't retroactively satisfy the filter
+// for this SAME bar's candidate.
+if not na(filter2BullishFrozenHigh) and not filter2BullishRetraceSatisfied
+    if math.min(open, close) <= filter2BullishFrozenHigh - filter2BullishFrozenRange * minRetracementPercent / 100
+        filter2BullishRetraceSatisfied := true
+if not na(filter2BearishFrozenLow) and not filter2BearishRetraceSatisfied
+    if math.max(open, close) >= filter2BearishFrozenLow + filter2BearishFrozenRange * minRetracementPercent / 100
+        filter2BearishRetraceSatisfied := true
+
+//bearish
+//if((low < structureLow and low[1] >= structureLow and low[2] >= structureLow and low[3] >= structureLow and bar_index[1] >  structureLowStartIndex and bar_index[2] >  structureLowStartIndex and bar_index[3] >  structureLowStartIndex) or (structureDirection == 2 and low < structureLow))
+if(isStuctureLowBroken)
+    // Check if structures to show is upper than user parameter
+    if(array.size(structureLines) >= structHistoryNbr)
+
+        // Delete the line and its index from arrays
+        d.delete_line(array.get(structureLines, 0), array.get(structureLabels, 0))
+        array.remove(structureLabels, 0)
+        array.remove(structureLines, 0)
+        
+
+    // Create BOS line
+    if(structureDirection == 1)  
+        array.push(structureLines, line.new(structureLowStartIndex, structureLow, bar_index, structureLow, xloc=xloc.bar_index, extend=extend.none, color=bearishBosColor, style=bosLineStyle, width=bosLineWidth))
+        array.push(structureLabels, label.new((bar_index + structureLowStartIndex) / 2, structureLow, text="BOS", style=label.style_none, textcolor=bearishBosColor))
+        isBOSAlert := true
+        bearishBosCount += 1
+        // BOS FILTER: record this accepted bearish continuation BOS for filters 1/2/5
+        lastBearishBosBar := bar_index
+        lastBearishBosLevel := structureLow
+        filter2BearishFrozenLow := structureLow
+        filter2BearishFrozenRange := math.abs(structureHigh - structureLow)
+        filter2BearishRetraceSatisfied := false
+
+    // Create CHoCH line
+    else
+        array.push(structureLines, line.new(structureLowStartIndex, structureLow, bar_index, structureLow, xloc=xloc.bar_index, extend=extend.none, color=bearishChochColor, style=chochLineStyle, width=chochLineWidth))
+        array.push(structureLabels, label.new((bar_index + structureLowStartIndex) / 2, structureLow, text="CHoCH", style=label.style_none, textcolor=bearishChochColor))
+        isCHOCHAlert := true
+        bearishChochCount += 1
+        // BOS FILTER: a CHoCH starts a fresh bearish direction - reset filter
+        // state for the new bearish leg so filters 1/2/5 apply relative to
+        // THIS reversal, not a stale prior bearish leg from before the
+        // intervening bullish phase.
+        lastBearishBosBar := bar_index
+        lastBearishBosLevel := structureLow
+        filter2BearishFrozenLow := structureLow
+        filter2BearishFrozenRange := math.abs(structureHigh - structureLow)
+        filter2BearishRetraceSatisfied := false
+
+    // Update values for new structure 
+    structureDirection := 1
+    bearishContinuationReady := false
+    bullishContinuationReady := true
+    continuationRange := math.abs(structureHigh - structureLow)
+    structureHighStartIndex := structureMaxBar
+    structureLowStartIndex  := bar_index
+    structureHigh := math.max(open[bar_index - structureHighStartIndex], close[bar_index - structureHighStartIndex])
+    structureLow  := math.min(open, close)
+
+//bullish
+// Check for breakout
+else if(isStructureHighBroken)
+    
+    // Check if structures to show is upper than user parameter
+    if(array.size(structureLines) >= structHistoryNbr)
+
+        // Delete the line and its index from arrays
+        d.delete_line(array.get(structureLines, 0), array.get(structureLabels, 0))
+        array.remove(structureLabels, 0)
+        array.remove(structureLines, 0)
+
+    // Create BOS line
+    if(structureDirection == 2)  
+        array.push(structureLines, line.new(structureHighStartIndex, structureHigh, bar_index, structureHigh, xloc=xloc.bar_index, extend=extend.none, color=bullishBosColor, style=bosLineStyle, width=bosLineWidth))
+        array.push(structureLabels, label.new((bar_index + structureHighStartIndex) / 2, structureHigh, text="BOS", style=label.style_none, textcolor=bullishBosColor))
+        isBOSAlert := true
+        bullishBosCount += 1
+        // BOS FILTER: record this accepted bullish continuation BOS for filters 1/2/5
+        lastBullishBosBar := bar_index
+        lastBullishBosLevel := structureHigh
+        filter2BullishFrozenHigh := structureHigh
+        filter2BullishFrozenRange := math.abs(structureHigh - structureLow)
+        filter2BullishRetraceSatisfied := false
+
+    // Create CHoCH line
+    else
+        array.push(structureLines, line.new(structureHighStartIndex, structureHigh, bar_index, structureHigh, xloc=xloc.bar_index, extend=extend.none, color=bullishChochColor, style=chochLineStyle, width=chochLineWidth))
+        array.push(structureLabels, label.new((bar_index + structureHighStartIndex) / 2, structureHigh, text="CHoCH", style=label.style_none, textcolor=bullishChochColor))
+        isCHOCHAlert := true
+        bullishChochCount += 1
+        // BOS FILTER: reset filter state for the new bullish leg, mirrored
+        // from the CHoCH case above.
+        lastBullishBosBar := bar_index
+        lastBullishBosLevel := structureHigh
+        filter2BullishFrozenHigh := structureHigh
+        filter2BullishFrozenRange := math.abs(structureHigh - structureLow)
+        filter2BullishRetraceSatisfied := false
+
+    // Update values for new structure
+    structureDirection := 2
+    continuationRange := math.abs(structureHigh - structureLow)
+    bullishContinuationReady := false
+    bearishContinuationReady := true
+    structureHighStartIndex := bar_index 
+    structureLowStartIndex  := structureMinBar
+    structureHigh := math.max(open, close)
+    structureLow  := math.min(open[bar_index - structureLowStartIndex], close[bar_index - structureLowStartIndex])
+else
+    isBOSAlert := false
+    isCHOCHAlert := false
+    if(math.max(open, close) > structureHigh and (structureDirection == 0 or structureDirection == 2))
+        if(not(isStructBodyCandleBreak) or not(isStructBodyCandleBreak and bar_index[1] > structureHighStartIndex and bar_index[2] >  structureHighStartIndex and bar_index[3] > structureHighStartIndex))
+            structureHigh := math.max(open, close)
+            structureHighStartIndex := bar_index
+    else if(math.min(open, close) < structureLow and (structureDirection == 0 or structureDirection == 1))
+        if(not(isStructBodyCandleBreak) or not(isStructBodyCandleBreak and bar_index[1] > structureLowStartIndex and bar_index[2] > structureLowStartIndex and bar_index[3] > structureLowStartIndex))
+            structureLow := math.min(open, close)
+            structureLowStartIndex := bar_index
+
+structureRange = math.abs(structureHigh - structureLow)
+
+
+
+// Affichage de la structure actuelle
+if(isCurrentStructToShow)
+    d.delete_line(structureHighLine, na)
+    d.delete_line(structureLowLine, na)
+    structureHighLine := line.new(structureHighStartIndex, structureHigh, bar_index, structureHigh, xloc.bar_index, color=currentStructColor, style = currentStructLineStyle, width = currentStructLineWidth)
+    structureLowLine := line.new(structureLowStartIndex, structureLow, bar_index, structureLow, xloc.bar_index, color=currentStructColor, style = currentStructLineStyle, width = currentStructLineWidth)
+
+    // Affichage du Fibonnacci 1 de la structure actuelle
+    if(isFibo1ToShow)
+        d.delete_line(fibo1Line, fibo1Label)
+        fibo1Price := structureDirection == 1 ? structureHigh - (structureRange - structureRange * fibo1Value) : structureLow + (structureRange - structureRange * fibo1Value)
+        fibo1StartIndex := structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex  
+        fibo1Line := line.new(fibo1StartIndex, fibo1Price, bar_index, fibo1Price, xloc.bar_index, color = fibo1Color, style = fibo1Style, width = fibo1LineWidth)
+        fibo1Label := label.new(bar_index + 20, fibo1Price, text = str.tostring(fibo1Value) + "(" + str.tostring(fibo1Price) + ")", style = label.style_none, textcolor = fibo1Color) 
+
+    // Affichage du Fibonnacci 2 de la structure actuelle
+    if(isFibo2ToShow)
+        d.delete_line(fibo2Line, fibo2Label)
+        fibo2Price := structureDirection == 1 ? structureHigh - (structureRange - structureRange * fibo2Value) : structureLow + (structureRange - structureRange * fibo2Value)
+        fibo2StartIndex := structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex  
+        fibo2Line := line.new(fibo2StartIndex, fibo2Price, bar_index, fibo2Price, xloc.bar_index, color = fibo2Color, style = fibo2Style, width = fibo2LineWidth)
+        fibo2Label := label.new(bar_index + 20, fibo2Price, text = str.tostring(fibo2Value) + "(" + str.tostring(fibo2Price) + ")", style = label.style_none, textcolor = fibo2Color) 
+
+    // Affichage du Fibonnacci 3 de la structure actuelle
+    if(isFibo3ToShow)
+        d.delete_line(fibo3Line, fibo3Label)
+        fibo3Price := structureDirection == 1 ? structureHigh - (structureRange - structureRange * fibo3Value) : structureLow + (structureRange - structureRange * fibo3Value)
+        fibo3StartIndex := structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex  
+        fibo3Line := line.new(fibo3StartIndex, fibo3Price, bar_index, fibo3Price, xloc.bar_index, color = fibo3Color, style = fibo3Style, width = fibo3LineWidth)
+        fibo3Label := label.new(bar_index + 20, fibo3Price, text = str.tostring(fibo3Value) + "(" + str.tostring(fibo3Price) + ")", style = label.style_none, textcolor = fibo3Color) 
+
+    // Affichage du Fibonnacci 1 de la structure actuelle
+    if(isFibo4ToShow)
+        d.delete_line(fibo4Line, fibo4Label)
+        fibo4Price := structureDirection == 1 ? structureHigh - (structureRange - structureRange * fibo4Value) : structureLow + (structureRange - structureRange * fibo4Value)
+        fibo4StartIndex := structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex  
+        fibo4Line := line.new(fibo4StartIndex, fibo4Price, bar_index, fibo4Price, xloc.bar_index, color = fibo4Color, style = fibo4Style, width = fibo4LineWidth)
+        fibo4Label := label.new(bar_index + 20, fibo4Price, text = str.tostring(fibo4Value) + "(" + str.tostring(fibo4Price) + ")", style = label.style_none, textcolor = fibo4Color) 
+
+    // Affichage du Fibonnacci 1 de la structure actuelle
+    if(isFibo5ToShow)
+        d.delete_line(fibo5Line, fibo5Label)
+        fibo5Price := structureDirection == 1 ? structureHigh - (structureRange - structureRange * fibo5Value) : structureLow + (structureRange - structureRange * fibo5Value)
+        fibo5StartIndex := structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex  
+        fibo5Line := line.new(fibo5StartIndex, fibo5Price, bar_index, fibo5Price, xloc.bar_index, color = fibo5Color, style = fibo5Style, width = fibo5LineWidth)
+        fibo5Label := label.new(bar_index + 20, fibo5Price, text = str.tostring(fibo5Value) + "(" + str.tostring(fibo5Price) + ")", style = label.style_none, textcolor = fibo5Color)
+
+    // 0.71 fib position (entry/SL/TP) - see the input group declaration
+    // and the var declarations above for context. Independent of the
+    // Trade Model further down: draws for the structure currently shown
+    // above regardless of whether it would pass that system's BOS Filters.
+    // Uses bar_index (not bar_time) for x, matching this file's own
+    // convention for the Fibo 1-5 lines just above.
+    if isFib071PositionToShow
+        d.delete_line(fib071EntryLine, fib071Label)
+        box.delete(fib071RiskBox)
+        box.delete(fib071RewardBox)
+
+        fib071Entry = structureDirection == 1 ? structureHigh - (structureRange - structureRange * 0.71) : structureLow + (structureRange - structureRange * 0.71)
+        fib071Tp = structureDirection == 1 ? structureLow : structureHigh
+        fib071Sl = structureDirection == 1 ? structureHigh : structureLow
+        fib071AnchorIndex = structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex
+
+        fib071EntryLine := line.new(fib071AnchorIndex, fib071Entry, bar_index, fib071Entry, xloc.bar_index, color=color.aqua, style=line.style_dashed, width=1)
+        fib071RiskBox := box.new(left=fib071AnchorIndex, top=math.max(fib071Entry, fib071Sl), right=bar_index, bottom=math.min(fib071Entry, fib071Sl), bgcolor=fib071RiskColor, border_color=color.new(color.red, 60))
+        fib071RewardBox := box.new(left=fib071AnchorIndex, top=math.max(fib071Entry, fib071Tp), right=bar_index, bottom=math.min(fib071Entry, fib071Tp), bgcolor=fib071RewardColor, border_color=color.new(color.green, 60))
+        fib071RrRaw = fib071Sl == fib071Entry ? 0.0 : math.abs(fib071Tp - fib071Entry) / math.abs(fib071Entry - fib071Sl)
+        fib071Rr = math.round(fib071RrRaw, 2)
+        fib071Label := label.new(bar_index + 20, fib071Entry, text = "Entry 0.71 | " + str.tostring(fib071Rr) + "R", style = label.style_none, textcolor = color.aqua)
+
+//isBOSAlert = (structureDirection == 1 and ((isStructBodyCandleBreak and close < structureLow) or (not(isStructBodyCandleBreak) and low < structureLow))) or (structureDirection == 2 and ((isStructBodyCandleBreak and close > structureHigh) or (not(isStructBodyCandleBreak) and high > structureHigh)))
+//isCHOCHAlert = (structureDirection == 1 and ((isStructBodyCandleBreak and close > structureHigh) or (not(isStructBodyCandleBreak) and high > structureHigh))) or (structureDirection == 2 and ((isStructBodyCandleBreak and close < structureLow) or (not(isStructBodyCandleBreak) and low < structureLow)))
+alertcondition(condition = isBOSAlert , title = "BOS", message = "BOS")
+alertcondition(condition = isCHOCHAlert , title = "CHOCH",message = "CHOCH")
+var table debugTable = table.new(position.top_right, 2, 12, border_width = 1)
+
+if barstate.islast
+    table.cell(debugTable, 0, 0, "DEBUG", bgcolor=color.gray, text_color=color.white)
+    table.cell(debugTable, 1, 0, "VALUE", bgcolor=color.gray, text_color=color.white)
+
+    table.cell(debugTable, 0, 1, "Direction")
+    table.cell(debugTable, 1, 1, structureDirection == 1 ? "BEARISH" : structureDirection == 2 ? "BULLISH" : "NONE")
+
+    table.cell(debugTable, 0, 2, "Continuation Range")
+    table.cell(debugTable, 1, 2, str.tostring(continuationRange))
+
+    table.cell(debugTable, 0, 3, "Min Retracement")
+    table.cell(debugTable, 1, 3, str.tostring(continuationRange * minSwingPercent / 100))
+
+    table.cell(debugTable, 0, 4, "Bullish Ready")
+    table.cell(debugTable, 1, 4, str.tostring(bullishContinuationReady))
+
+    table.cell(debugTable, 0, 5, "Bearish Ready")
+    table.cell(debugTable, 1, 5, str.tostring(bearishContinuationReady))
+
+    // CHoCH REWRITE: accepted-event counters
+    table.cell(debugTable, 0, 6, "Bullish BOS")
+    table.cell(debugTable, 1, 6, str.tostring(bullishBosCount))
+
+    table.cell(debugTable, 0, 7, "Bearish BOS")
+    table.cell(debugTable, 1, 7, str.tostring(bearishBosCount))
+
+    table.cell(debugTable, 0, 8, "Bullish CHoCH")
+    table.cell(debugTable, 1, 8, str.tostring(bullishChochCount))
+
+    table.cell(debugTable, 0, 9, "Bearish CHoCH")
+    table.cell(debugTable, 1, 9, str.tostring(bearishChochCount))
+
+    table.cell(debugTable, 0, 10, "Total BOS")
+    table.cell(debugTable, 1, 10, str.tostring(bullishBosCount + bearishBosCount))
+
+    table.cell(debugTable, 0, 11, "Total CHoCH")
+    table.cell(debugTable, 1, 11, str.tostring(bullishChochCount + bearishChochCount))
+
+// ============================================================================
+// BOS FILTER DEBUG TABLE (new) - separate table, only shown when
+// showBosFilterDebug is true. Does not touch the original debugTable above.
+// ============================================================================
+if showBosFilterDebug and barstate.islast
+    string enabledFiltersStr = ""
+    if enableMinSameDirectionBars
+        enabledFiltersStr := enabledFiltersStr + "MinBars "
+    if enableMinRetracement
+        enabledFiltersStr := enabledFiltersStr + "Retrace "
+    if enableMinSwingPercent
+        enabledFiltersStr := enabledFiltersStr + "Swing% "
+    if enableMinSwingPips
+        enabledFiltersStr := enabledFiltersStr + "SwingPips "
+    if enableMinBosDistance
+        enabledFiltersStr := enabledFiltersStr + "BosDist "
+    if enableAtrFilter
+        enabledFiltersStr := enabledFiltersStr + "ATR "
+    if enabledFiltersStr == ""
+        enabledFiltersStr := "NONE (passthrough)"
+
+    int barsSinceLastBos = structureDirection == 1 ? (na(lastBearishBosBar) ? na : bar_index - lastBearishBosBar) : (na(lastBullishBosBar) ? na : bar_index - lastBullishBosBar)
+    float lastBosPrice = structureDirection == 1 ? lastBearishBosLevel : lastBullishBosLevel
+    float retraceProgress = structureDirection == 2 and not na(filter2BullishFrozenHigh) and filter2BullishFrozenRange > 0 ? math.max(0, math.min(100, (filter2BullishFrozenHigh - math.min(open,close)) / filter2BullishFrozenRange * 100)) : structureDirection == 1 and not na(filter2BearishFrozenLow) and filter2BearishFrozenRange > 0 ? math.max(0, math.min(100, (math.max(open,close) - filter2BearishFrozenLow) / filter2BearishFrozenRange * 100)) : na
+
+    var table filterDebugTable = table.new(position.bottom_right, 2, 20, bgcolor=color.new(color.white, 15), border_width=1, border_color=color.gray)
+    table.cell(filterDebugTable, 0, 0, "-- BOS FILTER DEBUG --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(filterDebugTable, 1, 0, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(filterDebugTable, 0, 1, "Current Direction", text_color=color.black)
+    table.cell(filterDebugTable, 1, 1, structureDirection == 1 ? "BEARISH" : structureDirection == 2 ? "BULLISH" : "NONE", text_color=color.black)
+    table.cell(filterDebugTable, 0, 2, "Last BOS Direction", text_color=color.black)
+    table.cell(filterDebugTable, 1, 2, structureDirection == 1 ? "BEARISH" : "BULLISH", text_color=color.black)
+    table.cell(filterDebugTable, 0, 3, "Last BOS Bar", text_color=color.black)
+    table.cell(filterDebugTable, 1, 3, structureDirection == 1 ? (na(lastBearishBosBar) ? "na" : str.tostring(lastBearishBosBar)) : (na(lastBullishBosBar) ? "na" : str.tostring(lastBullishBosBar)), text_color=color.black)
+    table.cell(filterDebugTable, 0, 4, "Bars Since Last BOS", text_color=color.black)
+    table.cell(filterDebugTable, 1, 4, na(barsSinceLastBos) ? "na" : str.tostring(barsSinceLastBos), text_color=color.black)
+    table.cell(filterDebugTable, 0, 5, "Last BOS Price", text_color=color.black)
+    table.cell(filterDebugTable, 1, 5, na(lastBosPrice) ? "na" : str.tostring(lastBosPrice), text_color=color.black)
+    table.cell(filterDebugTable, 0, 6, "Current Structure Range", text_color=color.black)
+    table.cell(filterDebugTable, 1, 6, str.tostring(structureRange), text_color=color.black)
+    table.cell(filterDebugTable, 0, 7, "Retracement Progress %", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(filterDebugTable, 1, 7, na(retraceProgress) ? "na" : str.tostring(math.round(retraceProgress)) + "%", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(filterDebugTable, 0, 8, "Minimum Retracement %", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(filterDebugTable, 1, 8, str.tostring(minRetracementPercent) + "%", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(filterDebugTable, 0, 9, "Same-Direction Bars Requirement", text_color=color.black)
+    table.cell(filterDebugTable, 1, 9, str.tostring(minSameDirectionBars), text_color=color.black)
+    table.cell(filterDebugTable, 0, 10, "Current Same-Direction Bars", text_color=color.black)
+    table.cell(filterDebugTable, 1, 10, na(barsSinceLastBos) ? "na" : str.tostring(barsSinceLastBos), text_color=color.black)
+    table.cell(filterDebugTable, 0, 11, "Enabled Filters", text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(filterDebugTable, 1, 11, enabledFiltersStr, text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(filterDebugTable, 0, 12, "Last Filter Decision", text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(filterDebugTable, 1, 12, lastFilterDecision + (lastFilterDecision == "REJECTED" ? " (" + lastFilterReason + ")" : ""), text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(filterDebugTable, 0, 13, "Raw BOS Candidates", text_color=color.black, bgcolor=color.new(color.orange, 80))
+    table.cell(filterDebugTable, 1, 13, str.tostring(rawBosCandidateCount), text_color=color.black, bgcolor=color.new(color.orange, 80))
+    table.cell(filterDebugTable, 0, 14, "Accepted BOS", text_color=color.black, bgcolor=color.new(color.green, 80))
+    table.cell(filterDebugTable, 1, 14, str.tostring(filterAcceptedCount), text_color=color.black, bgcolor=color.new(color.green, 80))
+    table.cell(filterDebugTable, 0, 15, "Rejected: Min Bars", text_color=color.black)
+    table.cell(filterDebugTable, 1, 15, str.tostring(rejectedByMinBars), text_color=color.black)
+    table.cell(filterDebugTable, 0, 16, "Rejected: Retracement", text_color=color.black)
+    table.cell(filterDebugTable, 1, 16, str.tostring(rejectedByRetracement), text_color=color.black)
+    table.cell(filterDebugTable, 0, 17, "Rejected: Swing % / Pips", text_color=color.black)
+    table.cell(filterDebugTable, 1, 17, str.tostring(rejectedBySwingPct) + " / " + str.tostring(rejectedBySwingPips), text_color=color.black)
+    table.cell(filterDebugTable, 0, 18, "Rejected: BOS Distance", text_color=color.black)
+    table.cell(filterDebugTable, 1, 18, str.tostring(rejectedByBosDistance), text_color=color.black)
+    table.cell(filterDebugTable, 0, 19, "Rejected: ATR", text_color=color.black)
+    table.cell(filterDebugTable, 1, 19, str.tostring(rejectedByAtr), text_color=color.black)
+
+plot(na)

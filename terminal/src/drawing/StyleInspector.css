@@ -1,0 +1,121 @@
+.style-inspector {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  padding: 5px 8px;
+  pointer-events: auto;
+}
+
+.si-label {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  padding-right: 4px;
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.si-swatches,
+.si-widths {
+  display: flex;
+  gap: 4px;
+}
+
+.si-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.si-swatch.active {
+  border-color: var(--text);
+}
+
+.si-width {
+  width: 20px;
+  height: 20px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.si-width.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.si-width span {
+  width: 12px;
+  background: var(--text);
+  border-radius: 1px;
+}
+
+.si-delete {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  border-left: 1px solid var(--border);
+  padding-left: 6px;
+}
+
+.si-actions,
+.si-toggles {
+  display: flex;
+  gap: 2px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+}
+
+.si-icon-btn,
+.si-toggle {
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.si-icon-btn:hover,
+.si-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.si-icon-btn.active,
+.si-toggle.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.si-opacity {
+  width: 60px;
+  margin: 0 4px;
+}

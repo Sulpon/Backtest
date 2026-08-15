@@ -1,0 +1,37 @@
+/*
+  Re-skins dockview's structural theme (dockview-theme-abyss, used purely for
+  its zero-radius/flat structural choices) with the app's own token colors,
+  so it follows the light/dark theme selector automatically instead of
+  needing a second theme switch of its own.
+*/
+.dock-wrap {
+  height: 100%;
+}
+
+.terminal-dock {
+  height: 100%;
+  --dv-group-view-background-color: var(--bg-panel);
+  --dv-tabs-and-actions-container-background-color: var(--bg-panel-2);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--bg-panel);
+  --dv-activegroup-visiblepanel-tab-color: var(--text);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--bg-panel-2);
+  --dv-activegroup-hiddenpanel-tab-color: var(--text-dim);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--bg-panel-2);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--text-dim);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--bg-panel-2);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--text-faint);
+  --dv-tab-divider-color: var(--border);
+  --dv-separator-border: 1px solid var(--border);
+  --dv-paneview-header-border-color: var(--border);
+  --dv-paneview-active-outline-color: var(--accent);
+  --dv-drag-over-background-color: var(--accent-soft);
+  --dv-drag-over-border-color: var(--accent);
+  --dv-tabs-container-scrollbar-color: var(--text-faint);
+  --dv-scrollbar-background-color: transparent;
+  --dv-icon-hover-background-color: var(--bg-hover);
+  --dv-context-menu-background-color: var(--bg-elevated);
+  --dv-context-menu-color: var(--text);
+  --dv-floating-titlebar-background-color: var(--bg-panel-2);
+  --dv-tabs-and-actions-container-font-size: 11.5px;
+  --dv-tabs-and-actions-container-height: 30px;
+}

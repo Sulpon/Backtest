@@ -1,0 +1,9 @@
+.drawing-layer-canvas {
+  position: absolute;
+  inset: 0;
+  /* Never a mouse target itself - DrawingLayer listens on the pane-body
+   * container instead (capture phase), so native chart panning keeps
+   * working everywhere a drawing isn't hit. See DrawingLayer.tsx. */
+  pointer-events: none;
+  z-index: 3;
+}

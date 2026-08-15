@@ -1,0 +1,44 @@
+.drawing-context-menu {
+  position: fixed;
+  z-index: 50;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  min-width: 170px;
+  padding: var(--space-1) 0;
+  pointer-events: auto;
+}
+
+.drawing-context-menu button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 7px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.drawing-context-menu button:hover {
+  background: var(--bg-hover);
+}
+
+.dcm-shortcut {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.dcm-divider {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--border);
+}
+
+.dcm-delete {
+  color: var(--danger);
+}

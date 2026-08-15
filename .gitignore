@@ -1,0 +1,14 @@
+# Raw MT4 market-data exports - large, regenerable via terminal/backend/build_db.py
+EURUSD*.csv
+GBPUSD*.csv
+XAUUSD*.csv
+
+# Claude Code local tool state - not project source
+.claude/
+
+# Misc local notes
+Текстовый документ.txt
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db

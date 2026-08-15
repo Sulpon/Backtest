@@ -1,0 +1,198 @@
+@import "../components/modal.css";
+
+.ind-add-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+
+.ind-select {
+  flex: 1;
+  padding: 5px 6px;
+  font-size: 12px;
+}
+
+.ind-period-input {
+  width: 52px;
+  padding: 5px 6px;
+  font-size: 12px;
+}
+
+.ind-period-edit {
+  margin-left: auto;
+  width: 56px;
+}
+
+.ind-add-btn {
+  border: 1px solid var(--border-strong);
+  background: var(--accent-soft);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ind-add-btn:hover {
+  border-color: var(--accent);
+}
+
+.ind-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.ind-remove-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.ind-remove-btn:hover {
+  color: var(--danger);
+}
+
+.ci-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ci-name-input {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.ci-code {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.ci-error {
+  background: var(--bear-soft);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 6px 9px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.ci-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pine-code {
+  min-height: 220px;
+}
+
+.pine-run-summary {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+.pine-inputs {
+  margin-bottom: 10px;
+}
+
+.pine-input-group {
+  margin-bottom: 8px;
+}
+
+.pine-input-group-title {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 6px 0 3px;
+}
+
+.pine-input-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.pine-input-row input[type="text"],
+.pine-input-row input[type="number"],
+.pine-input-row select {
+  max-width: 130px;
+  padding: 3px 6px;
+  font-size: 11.5px;
+}
+
+.pine-input-label {
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ci-row {
+  cursor: default;
+}
+
+.ci-row:hover {
+  background: transparent;
+}
+
+.ci-visibility-btn {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ci-visibility-btn.visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.ci-clickable {
+  cursor: pointer;
+  width: auto;
+  flex: 1;
+}
+
+.ci-clickable:hover {
+  text-decoration: underline;
+}

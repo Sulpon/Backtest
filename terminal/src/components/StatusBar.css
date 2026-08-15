@@ -1,0 +1,24 @@
+.statusbar {
+  height: var(--statusbar-h);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 var(--space-3);
+  background: var(--bg-panel-2);
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.statusbar .dim {
+  color: var(--text-faint);
+}
+
+.statusbar-spacer {
+  flex: 1;
+}
+
+.statusbar-hint {
+  color: var(--highlight);
+}

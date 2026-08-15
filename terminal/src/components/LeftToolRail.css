@@ -1,0 +1,126 @@
+.rail {
+  width: var(--rail-w);
+  flex: 0 0 auto;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: var(--space-2) 0;
+  overflow-y: auto;
+}
+
+.rail-group {
+  position: relative;
+}
+
+.rail-btn {
+  width: 100%;
+  height: 34px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 15px;
+  border-radius: var(--radius-sm);
+}
+
+.rail-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.rail-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.rail-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.rail-caret {
+  font-size: 9px;
+  color: var(--text-faint);
+  margin-left: -4px;
+}
+
+.rail-spacer {
+  flex: 1;
+}
+
+.rail-divider {
+  height: 1px;
+  margin: var(--space-2) 6px;
+  background: var(--border);
+}
+
+.rail-flyout {
+  position: absolute;
+  left: calc(var(--rail-w) - 2px);
+  top: 0;
+  z-index: 40;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  min-width: 190px;
+  padding: var(--space-1) 0;
+}
+
+.rail-flyout-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 6px 12px 4px;
+}
+
+.rail-flyout-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 7px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rail-flyout-item:hover {
+  background: var(--bg-hover);
+}
+
+.rail-flyout-item.active {
+  color: var(--accent);
+}
+
+.rail-flyout-item.reserved {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.rail-flyout-item.reserved:hover {
+  background: transparent;
+}
+
+.reserved-badge {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  border: 1px solid var(--border-strong);
+  border-radius: 100px;
+  padding: 1px 6px;
+  line-height: 1.4;
+}
