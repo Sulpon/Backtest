@@ -1,6 +1,11 @@
 .venv/
 __pycache__/
 *.pyc
-data.duckdb
 .env
 .pytest_cache/
+
+# data.duckdb is intentionally tracked (via Git LFS - see .gitattributes at
+# the repo root and terminal/README.md#deploying-to-vercel), not ignored -
+# the deployed Vercel backend reads it directly, read-only, at the same
+# path db.py has always used. Regenerate it locally with build_db.py; don't
+# untrack it without also updating the Vercel deployment docs.

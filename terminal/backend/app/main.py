@@ -1,3 +1,4 @@
+import os
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -8,9 +9,22 @@ from .db import get_connection
 
 app = FastAPI(title="Terminal Data API", version="0.1.0")
 
+# Comma-separated list, e.g. "https://your-frontend.vercel.app,https://your-app.example.com".
+# Defaults to exactly the two origins this API has always allowed (Vite's
+# dev server) so local development is unaffected when the env var is unset -
+# only set CORS_ALLOWED_ORIGINS to change this, e.g. for a production
+# deployment where the frontend is on a different origin than the backend
+# (same-origin deployments, such as one Vercel project routing /api/* to
+# this service, don't need CORS at all - the browser never cross-origins).
+_default_origins = "http://localhost:5173,http://127.0.0.1:5173"
+# `or` (not `os.environ.get`'s default arg) so a present-but-blank
+# CORS_ALLOWED_ORIGINS= (e.g. copied straight from .env.example) still
+# falls back to the default instead of silently allowing zero origins.
+allowed_origins = [o.strip() for o in (os.environ.get("CORS_ALLOWED_ORIGINS") or _default_origins).split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=allowed_origins,
     allow_methods=["GET"],
     allow_headers=["*"],
 )
