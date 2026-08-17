@@ -3,6 +3,8 @@ from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .db import get_connection
@@ -28,6 +30,12 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+# /api/dataset responses run 5-11MB uncompressed (100k candles + tens of
+# thousands of SMC events) - gzip gets that down ~6x. A no-op in production
+# specifically on Vercel, which already Brotli-compresses at the edge
+# regardless of this middleware, but local dev (and any non-Vercel host)
+# had no compression at all before this.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 Timeframe = Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
 
@@ -139,6 +147,43 @@ def list_symbols():
     return [{"symbol": r[0], "label": r[1]} for r in rows]
 
 
+class Quote(BaseModel):
+    symbol: str
+    last: Optional[float]
+    prev: Optional[float]
+
+
+@app.get("/api/quotes", response_model=list[Quote])
+def get_quotes(timeframe: Timeframe = Query("1h")):
+    """Last/previous close per symbol for the watchlist - deliberately NOT
+    /api/dataset, which returns the full candle + SMC event history (5-11MB
+    per symbol). The watchlist only ever displays two numbers per row, so it
+    doesn't need bars, swings, BOS/CHoCH, FVG, order blocks, or trades."""
+    con = get_connection()
+    ranked = con.execute(
+        "SELECT symbol, close FROM ("
+        "  SELECT symbol, close, "
+        "    row_number() OVER (PARTITION BY symbol ORDER BY bar_index DESC) AS rn "
+        "  FROM candles WHERE timeframe = ?"
+        ") WHERE rn <= 2",
+        [timeframe],
+    ).fetchall()
+    by_symbol: dict[str, list[float]] = {}
+    for sym, close in ranked:
+        by_symbol.setdefault(sym, []).append(close)
+
+    symbol_rows = con.execute("SELECT symbol FROM symbols ORDER BY symbol").fetchall()
+    result = []
+    for (symbol,) in symbol_rows:
+        closes = by_symbol.get(symbol, [])
+        result.append({
+            "symbol": symbol,
+            "last": closes[0] if len(closes) > 0 else None,
+            "prev": closes[1] if len(closes) > 1 else None,
+        })
+    return result
+
+
 @app.get("/api/dataset", response_model=SymbolTimeframeData)
 def get_dataset(symbol: str = Query(...), timeframe: Timeframe = Query(...)):
     con = get_connection()
@@ -216,7 +261,7 @@ def get_dataset(symbol: str = Query(...), timeframe: Timeframe = Query(...)):
                 "breakevenWr": stat_row[6], "bySetup": json.loads(stat_row[7]),
             }
 
-    return {
+    payload = {
         "symbol": symbol,
         "timeframe": timeframe,
         "bars": [{"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4]} for r in bars],
@@ -233,3 +278,13 @@ def get_dataset(symbol: str = Query(...), timeframe: Timeframe = Query(...)):
         ],
         "stats": stats,
     }
+    # Returning a Response directly makes FastAPI skip response_model
+    # validation/jsonable_encoder on the way out - measured at ~350-420ms of
+    # pure overhead for this endpoint's ~140k-item payload (re-walking
+    # every bar/event through Pydantic a second time), on top of the
+    # ~130-150ms actually spent querying DuckDB and building the dict
+    # above. The data going out here is our own DB's output, not
+    # unvalidated user input, so there's no correctness reason to pay for
+    # that second validation pass. response_model stays on the decorator
+    # purely so /docs still shows the real response schema.
+    return JSONResponse(content=payload)

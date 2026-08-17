@@ -16,23 +16,19 @@ export function WatchlistPanel() {
 
   useEffect(() => {
     let cancelled = false;
-    dataLayer.listSymbols().then(async (symbols) => {
-      const loaded = await Promise.all(
-        symbols.map(async (symbol): Promise<Row> => {
-          try {
-            const d = await dataLayer.getSymbolData(symbol, "1h");
-            const bars = d.bars;
-            const last = bars.length ? bars[bars.length - 1].close : null;
-            const prev = bars.length > 1 ? bars[bars.length - 2].close : null;
-            const changePct = last != null && prev ? ((last - prev) / prev) * 100 : null;
-            return { symbol, last, changePct };
-          } catch {
-            return { symbol, last: null, changePct: null };
-          }
-        })
-      );
-      if (!cancelled) setRows(loaded);
-    });
+    dataLayer
+      .getQuotes("1h")
+      .then((quotes) => {
+        if (cancelled) return;
+        setRows(
+          quotes.map((q) => ({
+            symbol: q.symbol,
+            last: q.last,
+            changePct: q.last != null && q.prev ? ((q.last - q.prev) / q.prev) * 100 : null,
+          }))
+        );
+      })
+      .catch(() => !cancelled && setRows([]));
     return () => {
       cancelled = true;
     };

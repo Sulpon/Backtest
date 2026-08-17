@@ -1,5 +1,11 @@
 import type { SymbolTimeframeData, Timeframe } from "./types";
 
+export interface Quote {
+  symbol: string;
+  last: number | null;
+  prev: number | null;
+}
+
 /**
  * The only way any UI component is allowed to reach candle/structure data.
  * Two implementations exist behind this one interface - no component that
@@ -8,6 +14,11 @@ import type { SymbolTimeframeData, Timeframe } from "./types";
 export interface DataLayer {
   listSymbols(): Promise<string[]>;
   getSymbolData(symbol: string, timeframe: Timeframe): Promise<SymbolTimeframeData>;
+  /** Last/previous close per symbol - e.g. for the watchlist. Deliberately
+   * NOT built from getSymbolData(): that returns the full multi-MB candle +
+   * SMC event history per symbol, which a watchlist row (two numbers) never
+   * needs. */
+  getQuotes(timeframe: Timeframe): Promise<Quote[]>;
 }
 
 /** Milestone 1's implementation: fetches the pre-generated static JSON files
@@ -31,6 +42,28 @@ export class StaticJsonDataLayer implements DataLayer {
       this.cache.set(key, pending);
     }
     return pending;
+  }
+
+  // No lightweight quote endpoint in static/offline mode - falls back to
+  // the full per-symbol fetch (still benefits from the cache above, so this
+  // only costs full downloads on the very first watchlist paint).
+  async getQuotes(timeframe: Timeframe): Promise<Quote[]> {
+    const symbols = await this.listSymbols();
+    return Promise.all(
+      symbols.map(async (symbol): Promise<Quote> => {
+        try {
+          const d = await this.getSymbolData(symbol, timeframe);
+          const bars = d.bars;
+          return {
+            symbol,
+            last: bars.length ? bars[bars.length - 1].close : null,
+            prev: bars.length > 1 ? bars[bars.length - 2].close : null,
+          };
+        } catch {
+          return { symbol, last: null, prev: null };
+        }
+      })
+    );
   }
 }
 
@@ -62,6 +95,17 @@ export class ApiDataLayer implements DataLayer {
     if (!res.ok) throw this.unreachable(res.status);
     const rows: { symbol: string }[] = await res.json();
     return rows.map((r) => r.symbol);
+  }
+
+  async getQuotes(timeframe: Timeframe): Promise<Quote[]> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/api/quotes?timeframe=${timeframe}`);
+    } catch {
+      throw this.unreachable();
+    }
+    if (!res.ok) throw this.unreachable(res.status);
+    return res.json();
   }
 
   getSymbolData(symbol: string, timeframe: Timeframe): Promise<SymbolTimeframeData> {

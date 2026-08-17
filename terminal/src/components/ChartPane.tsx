@@ -266,14 +266,25 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     setSessionBandRects(rects);
   }
 
-  function renderMarkers() {
-    const d = dataRef.current;
-    if (!d || !markersRef.current) return;
+  // Windowed to [from, to] the same way renderOverlays' own series are -
+  // swingPoints/bosEvents run into the thousands even for a single
+  // symbol/timeframe, and markers outside the visible range are invisible
+  // anyway, so computing/sorting/setting all of them on every data or
+  // settings change was pure waste. Only ever called from inside
+  // renderOverlays (which already computes from/to, and is itself already
+  // wired into the chart's pan/zoom debounce), so markers stay in sync with
+  // panning exactly like every other overlay already does.
+  function renderMarkers(d: SymbolTimeframeData, from: number, to: number) {
+    if (!markersRef.current) return;
     const t = themeRef.current;
     const sv = smcVisibleRef.current;
     const swingMarkers = sv.swings
       ? d.swingPoints
           .filter((s) => s.bar >= 0 && s.bar < d.bars.length)
+          .filter((s) => {
+            const bt = d.bars[s.bar].time;
+            return bt >= from && bt <= to;
+          })
           .map((s) => ({
             time: asTime(d.bars[s.bar].time),
             position: (s.kind === "high" ? "aboveBar" : "belowBar") as "aboveBar" | "belowBar",
@@ -285,6 +296,10 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
       : [];
     const bosMarkers = d.bosEvents
       .filter((b) => (b.kind === "choch" ? sv.choch : sv.bos))
+      .filter((b) => {
+        const bt = d.bars[b.barEnd]?.time;
+        return bt != null && bt >= from && bt <= to;
+      })
       .map((b) => ({
         time: asTime(d.bars[b.barEnd].time),
         position: "inBar" as const,
@@ -293,6 +308,8 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
         text: b.kind === "choch" ? "CHoCH" : "BOS",
         size: 0.5,
       }));
+    // Not windowed - a single explicit user pick, never expensive to
+    // include regardless of the current view.
     const pendingBarIdx = pendingBarRef.current;
     const pickedMarker =
       pendingBarIdx != null && pendingBarIdx >= 0 && pendingBarIdx < d.bars.length
@@ -426,6 +443,7 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     updateSessionBands(chart, from, to);
     renderIndicators(chart, d, from, to);
     renderCustomIndicators(chart, d, from, to);
+    renderMarkers(d, from, to);
 
     const sv = smcVisibleRef.current;
 
@@ -755,8 +773,7 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   useEffect(() => {
     chartRef.current?.applyOptions(chartOptions(theme, chartFontSize));
     seriesRef.current?.applyOptions(candleOptions(theme));
-    renderMarkers();
-    renderOverlays();
+    renderOverlays(); // also renders markers - see renderMarkers' own doc comment
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [theme, smcVisible, sessionsVisible, chartFontSize, indicators, customIndicators, pendingBar]);
 
@@ -795,13 +812,12 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
 
     dataRef.current = data;
     seriesRef.current.setData(data.bars.map((b) => ({ ...b, time: asTime(b.time) })));
-    renderMarkers();
 
     const last = data.bars.length - 1;
     const from = Math.max(0, last - 300);
     chartRef.current.timeScale().setVisibleRange({ from: asTime(data.bars[from].time), to: asTime(data.bars[last].time) });
 
-    renderOverlays();
+    renderOverlays(); // also renders markers, windowed to the range just set above
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
@@ -839,8 +855,7 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     const effective = replayActive ? applyReplayCursor(full, localBar) : full;
     dataRef.current = effective;
     seriesRef.current.setData(effective.bars.map((b) => ({ ...b, time: asTime(b.time) })));
-    renderMarkers();
-    renderOverlays();
+    renderOverlays(); // also renders markers
     if (replayActive) {
       frameReplayCursor(chartRef.current, full, localBar, jumpNonce !== prevJumpNonceRef.current);
     }
