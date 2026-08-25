@@ -1,7 +1,23 @@
 // This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © LudoGH68
 //@version=5
-indicator("SMC Structures and FVG", overlay = true, max_lines_count=3000, max_labels_count=3000, max_boxes_count=3000)
+// Drawing-object caps raised well past a few thousand: lines/labels/boxes
+// are each their own FIFO-capped registry (oldest evicted once the count
+// of ever-created objects of that type passes the cap - NOT the count
+// currently visible, since script's own explicit deletes, e.g. mitigated
+// FVGs, already keep the live count far lower than either number here).
+// At 3000, a multi-year 1H backtest creates ~100k-700k line/label/box
+// objects over its full run (measured directly: 704,483 lines / 623,495
+// labels / 221,808 boxes across the full ~16yr EURUSD 1H dataset), so
+// objects from anywhere but the last ~3000-object window - including
+// "Apply From Date" positions/structure from long ago - were evicted
+// before the run even finished, regardless of how far back the
+// indicator's own Apply From Date setting told it to start. Raised past
+// the measured worst case with real margin for the dataset growing over
+// time; verified no meaningful performance change at this size (eviction
+// itself is O(1) either way - the cap just controls how long an object
+// survives before eligible for it).
+indicator("SMC Structures and FVG", overlay = true, max_lines_count=1000000, max_labels_count=1000000, max_boxes_count=500000)
 import LudoGH68/Drawings_public/1 as d
 
 getLineStyle(lineOption) =>
@@ -175,6 +191,30 @@ atrLength = input.int(14, "ATR Length", minval=1, maxval=200, group="BOS Filters
 atrMultiplier = input.float(0.5, "Minimum Swing ATR Multiplier", minval=0, step=0.1, group="BOS Filters")
 
 filterCombination = input.string("ALL ENABLED FILTERS", "Filter Combination", options=["ALL ENABLED FILTERS", "ANY ENABLED FILTER"], group="BOS Filters")
+
+// ============================================================================
+// IMBALANCE FILTER (new) - separate from BOS Filters above: applies to
+// EVERY accepted setup (BOS and CHoCH alike), not just same-direction
+// continuations. Default OFF, single checkbox - flip it on to only allow
+// a setup to actually ENTER a trade if at least one FVG (imbalance) formed
+// somewhere inside its own Fibonacci range. Structure (BOS/CHoCH lines,
+// the structure engine itself) is completely untouched either way - a
+// filtered-out setup still shows on the chart exactly as before, its
+// Trade Fibonacci lines still draw, it just never enters a trade (stays
+// pending until it invalidates normally via an SL body-breach, same as
+// any other setup that's simply never touched 0.71).
+//
+// Deliberately NOT read from the (currently-displayed-only, capped at
+// fvgHistoryNbr=50) fvgBoxes array - by the time a setup's range is many
+// bars in the past, the FVG that occurred inside it may already have
+// aged out of that display-only window, which would wrongly say "no
+// imbalance" for ranges that genuinely had one. legHasImbalance instead
+// tracks the *current developing leg* directly off the same raw
+// isBullishFVG/isBearishFVG pattern match FVG detection itself uses,
+// independent of anything display-related, so it's exact for every leg,
+// not just the last ~50.
+// ============================================================================
+requireImbalanceInRange = input.bool(false, "Require FVG Inside Fibonacci Range", group="Imbalance Filter")
 
 showBosFilterDebug = input.bool(false, "Show BOS Filter Debug", group="Debug")
 showDebugTables = input.bool(true, "Show Debug Tables", group="Debug")
@@ -449,6 +489,22 @@ var float lastEventBarLow = na
 var line[] tradeFibLines = array.new_line()
 var label[] tradeFibLabels = array.new_label()
 
+// IMBALANCE FILTER STATE (new) - legHasImbalance tracks whether the
+// CURRENTLY-developing leg (from wherever structureHigh/structureLow's
+// anchor last fully reset, per the structure engine's own "Update values
+// for new structure" blocks below) has had an FVG anywhere inside it so
+// far. Reset to false in those same two blocks, right after being read
+// for the event that just got created from the leg that's ending - so a
+// BOS's stored value is exact and final (its range is already fully
+// formed at creation), while a CHoCH's stored value keeps getting OR'd
+// forward in the per-bar processing loop below (mirroring exactly how
+// that same loop already forward-tracks a CHoCH's evFib0/evFib071 until
+// its own range freezes).
+var bool legHasImbalance = false
+// Parallel to the evXxx arrays below - see requireImbalanceInRange's
+// comment above for why this doesn't reuse the FVG display array.
+var bool[] evHasImbalance = array.new_bool()
+
 // ============================================================================
 // BOS FILTER STATE (new) - all state needed by the 6 optional filters.
 // Nothing here is read by the original detection formulas below; it only
@@ -486,6 +542,13 @@ var string lastFilterReason = "N/A"
 // Define FVG type
 isBullishFVG = high[3] < low[1]
 isBearishFVG = low[3] > high[1]
+
+// Marks the current developing leg as having an imbalance, independent of
+// isFvgToShow (a real market fact, not something a display toggle should
+// change) and independent of the FVG display array's own history cap -
+// see requireImbalanceInRange's comment above.
+if isBullishFVG or isBearishFVG
+    legHasImbalance := true
 
 // Bullish FVG process
 if(isBullishFVG and isFvgToShow)
@@ -806,6 +869,7 @@ if(isStuctureLowBroken)
             array.shift(evFib071)
             array.shift(evFib1)
             array.shift(evStatus)
+            array.shift(evHasImbalance)
             array.shift(evEntryPrice)
             array.shift(evEntryBar)
             array.shift(evEntryTime)
@@ -865,6 +929,11 @@ if(isStuctureLowBroken)
         array.push(evFib1, structureHigh)
 
         array.push(evStatus, "ACTIVE_SETUP")
+        // BOS: this leg's range is already fully formed, so this is the
+        // final answer. CHoCH: this is just the starting snapshot - the
+        // per-bar processing loop below keeps OR-ing legHasImbalance into
+        // this same slot until the CHoCH's own range freezes.
+        array.push(evHasImbalance, legHasImbalance)
 
         array.push(evEntryPrice, na)
         array.push(evEntryBar, na)
@@ -936,6 +1005,7 @@ if(isStuctureLowBroken)
             array.shift(evFib071)
             array.shift(evFib1)
             array.shift(evStatus)
+            array.shift(evHasImbalance)
             array.shift(evEntryPrice)
             array.shift(evEntryBar)
             array.shift(evEntryTime)
@@ -1002,6 +1072,11 @@ if(isStuctureLowBroken)
         array.push(evFib1, structureHigh)
 
         array.push(evStatus, "ACTIVE_SETUP")
+        // BOS: this leg's range is already fully formed, so this is the
+        // final answer. CHoCH: this is just the starting snapshot - the
+        // per-bar processing loop below keeps OR-ing legHasImbalance into
+        // this same slot until the CHoCH's own range freezes.
+        array.push(evHasImbalance, legHasImbalance)
 
         array.push(evEntryPrice, na)
         array.push(evEntryBar, na)
@@ -1051,6 +1126,9 @@ if(isStuctureLowBroken)
     structureLowStartTime := time
     structureHigh := math.max(open[bar_index - structureHighStartIndex], close[bar_index - structureHighStartIndex])
     structureLow  := math.min(open, close)
+    // New leg starting fresh - the CHoCH event just above already captured
+    // the old leg's final legHasImbalance value into evHasImbalance.
+    legHasImbalance := false
 
 //bullish
 // Check for breakout
@@ -1107,6 +1185,7 @@ else if(isStructureHighBroken)
             array.shift(evFib071)
             array.shift(evFib1)
             array.shift(evStatus)
+            array.shift(evHasImbalance)
             array.shift(evEntryPrice)
             array.shift(evEntryBar)
             array.shift(evEntryTime)
@@ -1168,6 +1247,11 @@ else if(isStructureHighBroken)
         array.push(evFib1, structureLow)
 
         array.push(evStatus, "ACTIVE_SETUP")
+        // BOS: this leg's range is already fully formed, so this is the
+        // final answer. CHoCH: this is just the starting snapshot - the
+        // per-bar processing loop below keeps OR-ing legHasImbalance into
+        // this same slot until the CHoCH's own range freezes.
+        array.push(evHasImbalance, legHasImbalance)
 
 
         array.push(evProfitBox, na)
@@ -1236,6 +1320,7 @@ else if(isStructureHighBroken)
             array.shift(evFib071)
             array.shift(evFib1)
             array.shift(evStatus)
+            array.shift(evHasImbalance)
             array.shift(evEntryPrice)
             array.shift(evEntryBar)
             array.shift(evEntryTime)
@@ -1298,6 +1383,11 @@ else if(isStructureHighBroken)
         array.push(evFib1, structureLow)
 
         array.push(evStatus, "ACTIVE_SETUP")
+        // BOS: this leg's range is already fully formed, so this is the
+        // final answer. CHoCH: this is just the starting snapshot - the
+        // per-bar processing loop below keeps OR-ing legHasImbalance into
+        // this same slot until the CHoCH's own range freezes.
+        array.push(evHasImbalance, legHasImbalance)
 
         array.push(evEntryPrice, na)
         array.push(evEntryBar, na)
@@ -1345,6 +1435,9 @@ else if(isStructureHighBroken)
     structureLowStartTime := time[bar_index - structureMinBar]
     structureHigh := math.max(open, close)
     structureLow  := math.min(open[bar_index - structureLowStartIndex], close[bar_index - structureLowStartIndex])
+    // New leg starting fresh - the CHoCH event just above already captured
+    // the old leg's final legHasImbalance value into evHasImbalance.
+    legHasImbalance := false
 else
     isBOSAlert := false
     isCHOCHAlert := false
@@ -1418,6 +1511,11 @@ if array.size(pendingIdx) > 0
     for li = 0 to array.size(pendingIdx) - 1
         int lidx = array.get(pendingIdx, li)
         if array.get(evType, lidx) == "CHoCH"
+            // Keep this CHoCH's imbalance flag current with its still-growing
+            // range, exactly like evFib0/evFib071 below - a bar that lands
+            // inside isBullishFVG/isBearishFVG anywhere before the range
+            // freezes (bullish/bearishContinuationReady) counts.
+            array.set(evHasImbalance, lidx, array.get(evHasImbalance, lidx) or legHasImbalance)
             string lDir = array.get(evDirection, lidx)
             float lAnchor = array.get(evFib1, lidx)
             if lDir == "BULLISH" and not bullishContinuationReady
@@ -1572,7 +1670,11 @@ if array.size(pendingIdx) > 0
             string pDir = array.get(evDirection, pidx)
             float pEntryLvl = array.get(evFib071, pidx)
             bool entered = pDir == "BULLISH" ? low <= pEntryLvl : high >= pEntryLvl
-            if entered
+            // IMBALANCE FILTER: when enabled, a setup whose range never had
+            // an FVG simply never enters - it stays pending exactly as
+            // before (still shown, still invalidates normally via SL
+            // body-breach), it just never triggers ENTERED.
+            if entered and (not requireImbalanceInRange or array.get(evHasImbalance, pidx))
                 if allowMultipleOpenTrades or not hasOpenTrade
                     array.set(evStatus, pidx, "ENTERED")
                     array.set(evEntryPrice, pidx, pEntryLvl)
