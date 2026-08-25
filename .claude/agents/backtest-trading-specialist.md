@@ -87,11 +87,17 @@ if one exists by then) comparing engine/Pine-detected structure against
 
 - Full backend suite: `.venv/Scripts/python.exe -m pytest -q` from
   `terminal/backend/`.
-- For any change touching `run_backtest()`/`compute_structure()`: run
-  `build_db.py` (or the new on-demand engine path) before and after,
-  diff the resulting `trades`/`stats`/`order_blocks` rows for EURUSD 1h,
-  and report the diff explicitly — "no errors" is not the same as "no
-  regression."
+- For any change touching `run_backtest()`/`compute_structure()`: **never**
+  verify by re-running `build_db.py` — it does `os.remove(DB_PATH)` then
+  reconnects fresh, which deletes `market_candles`/`instruments`/
+  `data_sync_jobs` along with everything else (see ARCHITECTURE.md risk
+  #5), destroying any Phase 2 provider-synced data as a side effect of a
+  "just verifying" step. Instead, call `run_backtest()`/`compute_structure()`
+  in-process and diff the result against the `trades`/`stats`/`order_blocks`
+  rows already in the checked-in `data.duckdb` (read via `app.db
+  .get_connection()`, same pattern as `test_dataset_windowing.py`) —
+  before and after the change — and report the diff explicitly. "No
+  errors" is not the same as "no regression."
 - For Phase 6 work: a concrete evaluation run against real logged
   ground-truth data must produce explainable per-event match/mismatch
   output, not just an aggregate score.

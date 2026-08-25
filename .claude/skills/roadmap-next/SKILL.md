@@ -20,12 +20,20 @@ and this file is stale and should be corrected.
 
 ## Operating mode (read this before starting)
 
-- **Interactive and human-observed only.** This skill runs one task and
-  then stops to report. It never chains into the next task silently, and
-  it never calls `ScheduleWakeup` or `CronCreate` to keep itself running
-  unattended. If the human wants it to keep going, they invoke it again
-  (or wrap it in their own `/loop roadmap-next` — that is the human's
-  choice to make, not this skill's to assume).
+- **Default is interactive and human-observed.** This skill runs one task
+  and then stops to report; it does not chain into the next task itself.
+  Whether it is re-invoked by a human, or by a `ScheduleWakeup`/
+  `CronCreate` schedule, is governed entirely by `CLAUDE.md`'s
+  "Autonomous-loop boundaries" section — that file is authoritative on
+  whether an unattended schedule currently exists and what it's scoped
+  to. This skill never creates or modifies that schedule itself; it only
+  behaves correctly under either mode.
+- **When running unattended** (an active `CLAUDE.md`-recorded exception):
+  do not wait indefinitely at a §9 trigger for an answer that may not
+  come this tick — record the task as blocked with the specific open
+  question, move to a different unblocked task if one exists, and let the
+  question surface next time a human is actually present. Never guess the
+  answer to proceed.
 - **One task at a time, fully verified or explicitly blocked before the
   next one starts.**
 - **Never proceed past a §9 trigger without a human answer present in the
@@ -149,7 +157,10 @@ skill (`/roadmap-next` or asking again) when ready for the next task.
 
 ## What this skill deliberately does not do
 
-- It does not set up scheduled or unattended automation of any kind.
+- It does not create, modify, or cancel its own scheduling — whether an
+  unattended cadence exists at all is `CLAUDE.md`'s decision (recorded in
+  its "Autonomous-loop boundaries" section) and `/loop`'s/`CronCreate`'s
+  mechanism, never something this skill sets up on its own initiative.
 - It does not reimplement `ecc:code-review`, `ecc:tdd-guide`,
   `ecc:test-coverage`, `ecc:verification-loop`, `ecc:checkpoint`,
   `ecc:planner`, or the `orch-*` family — it calls them.

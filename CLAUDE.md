@@ -131,18 +131,39 @@ typecheck+build:  cd terminal && npm run build
 
 ## Autonomous-loop boundaries
 
-- The orchestration loop (`.claude/skills/roadmap-next`) is
-  **interactive-only right now**: a human runs it and watches in
-  real time, and can interrupt at any point. No `ScheduleWakeup`- or
-  `CronCreate`-based unattended run exists, and none should be created
-  without a separate, explicit human request.
+- **Default posture is still interactive-only**: a human runs
+  `.claude/skills/roadmap-next` and watches, and can interrupt at any
+  point. No `ScheduleWakeup`- or `CronCreate`-based unattended run should
+  be created without a separate, explicit human request — this default
+  has not changed.
+- **Explicit exception, in effect since 2026-08-26**: the human explicitly
+  requested (`/loop 30m /roadmap-next`), after being shown the tradeoff
+  and confirming it reverses the interactive-only default, a recurring
+  cron schedule (`*/30 * * * *`, created via `CronCreate`, subject to the
+  platform's 7-day auto-expiry) that re-invokes `/roadmap-next`
+  unattended. This exception is scoped to that specific schedule; it does
+  not authorize any *other* unattended automation without its own
+  separate, explicit request. Cancel with `CronDelete` (job ID recorded
+  wherever it was created) to return to the interactive-only default.
+- **Because the loop can now run with no one watching a given tick**: if a
+  §9 trigger fires while unattended, the orchestrator must not wait
+  indefinitely for an answer that may not come — record the task as
+  blocked (with the specific question that needed asking) and move on to
+  a different unblocked task, exactly as it would for an exhausted retry
+  budget. It surfaces the open question the next time a human is actually
+  present, rather than stalling the whole loop on it.
+- **Pushing to a shared branch always requires separate, explicit
+  human approval in the transcript, with no exception** — this is
+  unaffected by the scheduling exception above. An unattended tick may
+  commit locally; it must never push.
 - One task fully verified and committed (or explicitly recorded as
   blocked) before the next task starts — never parallel uncommitted work
   across tasks.
 - Bounded retries: 3 attempts per task on failure, then stop and report.
   Never loop indefinitely on the same failure.
 - Never proceed past a §9 trigger without a human answer present in the
-  transcript.
+  transcript, except as modified by the "because the loop can now run
+  with no one watching" rule above.
 
 ## Specialist routing
 
