@@ -1,0 +1,2382 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LudoGH68
+//@version=5
+// ============================================================================
+// TRADINGVIEW BUILD - generated from smc.pine (the version used by this
+// project's own backtesting terminal, which runs Pine scripts through its
+// own custom interpreter, not real TradingView). Identical in every respect
+// except one: the `backtest.recordTrade(...)` call that script uses to hand
+// closed trades off to that app's own UI has been removed (search
+// "TRADINGVIEW BUILD" further down) - `backtest` is a bridge namespace that
+// app's interpreter provides, not a real Pine one, and would fail to
+// compile here. Every BOS/CHoCH/FVG detection rule, filter, and the trade
+// model itself (TP/SL/entry tracking, statistics tables) is unchanged - the
+// two files should produce identical BOS/CHoCH/FVG output and identical
+// trade-by-trade results, just without that one extra hand-off.
+// ============================================================================
+// Drawing-object caps raised well past a few thousand: lines/labels/boxes
+// are each their own FIFO-capped registry (oldest evicted once the count
+// of ever-created objects of that type passes the cap - NOT the count
+// currently visible, since script's own explicit deletes, e.g. mitigated
+// FVGs, already keep the live count far lower than either number here).
+// At 3000, a multi-year 1H backtest creates ~100k-700k line/label/box
+// objects over its full run (measured directly: 704,483 lines / 623,495
+// labels / 221,808 boxes across the full ~16yr EURUSD 1H dataset), so
+// objects from anywhere but the last ~3000-object window - including
+// "Apply From Date" positions/structure from long ago - were evicted
+// before the run even finished, regardless of how far back the
+// indicator's own Apply From Date setting told it to start. Raised past
+// the measured worst case with real margin for the dataset growing over
+// time; verified no meaningful performance change at this size (eviction
+// itself is O(1) either way - the cap just controls how long an object
+// survives before eligible for it).
+indicator("SMC Structures and FVG", overlay = true, max_lines_count=1000000, max_labels_count=1000000, max_boxes_count=500000)
+import LudoGH68/Drawings_public/1 as d
+
+getLineStyle(lineOption) =>
+    lineOption == "┈" ? line.style_dotted : lineOption == "╌" ? line.style_dashed : line.style_solid
+
+get_structure_highest_bar(lookback) =>
+
+	var int idx = 0
+    maxBar = bar_index > lookback ? ta.highestbars(high, lookback) : ta.highestbars(high, bar_index + 1)
+
+	for i = 0 to lookback - 1 by 1
+		if high[i+1] > high[i+2] and high[i] <= high[i+1] and ((i+1) * -1) >= maxBar
+			idx := (i+1) * -1
+			//break
+            
+	idx := idx == 0 ? maxBar : idx 
+
+get_structure_lowest_bar(lookback) =>
+
+	var int idx = 0
+    minBar = bar_index > lookback ? ta.lowestbars(low, lookback) : ta.lowestbars(low, bar_index + 1)
+
+	for i = 0 to lookback - 1 by 1
+		if low[i+1] < low[i+2] and low[i] >= low[i+1]  and ((i+1) * -1) >= minBar
+			idx := (i+1) * -1
+            //break
+			
+	idx := idx == 0 ? minBar : idx 
+
+is_structure_high_broken(_highStructBreakPrice, _structureHigh, _structureHighStartIndex, _structureDirection) =>
+    var bool res = false
+
+    if (_highStructBreakPrice > _structureHigh and  bar_index[1] >  _structureHighStartIndex) or (_structureDirection == 1 and _highStructBreakPrice > _structureHigh)
+        res := true
+    else
+        res := false
+
+    res
+
+// Fear Value Gap
+isFvgToShow =  input(true, title='Display FVG', group="Fear Value Gap")
+bullishFvgColor = input(color.new(color.green, 50), 'Bullish FVG Color', group="Fear Value Gap")
+bearishFvgColor = input(color.new(color.red, 50), 'Bearish FVG Color', group="Fear Value Gap")
+mitigatedFvgColor = input(color.new(color.gray, 50), 'Mitigated FVG Color', group="Fear Value Gap")
+fvgHistoryNbr = input.int(50, 'Number of FVG to show', minval=1, maxval=50)
+isMitigatedFvgToReduce = input(false, title='Reduce mitigated FVG', group="Fear Value Gap")
+
+// Structures
+isStructBodyCandleBreak = input(true, title='Break with candle\'s body', group="Structures")
+// Continuous extreme tracking (the running structureHigh/structureLow while
+// a phase is still developing, no new BOS/CHoCH yet) keeps extending on
+// every bar that makes a new extreme. If a bar-count gap this wide passes
+// with NO new extreme, the high/low locks for the rest of the phase - a
+// later extreme past that gap is no longer accepted. Making a new extreme
+// resets the gap counter, so an active, still-developing swing never locks
+// early; only a genuine pause of this length does.
+structureExtremeLockBars = input.int(5, "Lock High/Low After N Bars With No New Extreme", minval=1, maxval=50, group="Structures")
+isCurrentStructToShow = input(true, title='Display current structure', group="Structures")
+bullishBosColor = input(color.silver, 'Bullish BOS Color', group="Structures")
+bearishBosColor = input(color.silver, 'Bearish BOS Color', group="Structures")
+bosLineStyleOption = input.string("─", title="BOS Style", group="Structures", options=["─", "┈", "╌"])
+bosLineStyle = getLineStyle(bosLineStyleOption)
+bosLineWidth = input.int(1, title="BOS Width", group="Structures", minval=1, maxval=5)
+bullishChochColor = input(color.yellow, 'Bullish CHoCH Color', group="Structures")
+bearishChochColor = input(color.yellow, 'Bearish CHoCH Color', group="Structures")
+chochLineStyleOption = input.string("─", title="CHoCH Style", group="Structures", options=["─", "┈", "╌"])
+chochLineStyle = getLineStyle(chochLineStyleOption)
+chochLineWidth = input.int(1, title="MSB Width", group="Structures", minval=1, maxval=5)
+currentStructColor = input(color.blue, 'Current structure Color', group="Structures")
+currentStructLineStyleOption = input.string("─", title="Current structure Style", group="Structures", options=["─", "┈", "╌"])
+currentStructLineStyle = getLineStyle(currentStructLineStyleOption)
+currentStructLineWidth = input.int(1, title="Current structure Width", group="Structures", minval=1, maxval=5)
+// TRADE MODEL REWRITE: structHistoryNbr (max 50) replaced per request. Two
+// separate caps now exist because Pine hard-caps ANY single indicator at
+// 500 lines / 500 labels / 500 boxes simultaneously (a platform ceiling,
+// not a choice) - maxHistoricalStructure governs how many events are
+// tracked in the CALCULATION arrays (can go up to 1000, matching the
+// request), while maxDisplayedStructureLines governs how many of those are
+// actually drawn as line/label objects, kept well under the 500 ceiling
+// since FVG boxes, trade Fibonacci, and markers all share that same budget
+// across the whole indicator.
+showAllHistoricalStructure = input.bool(true, "Show All Historical Structure", group="Structures")
+maxHistoricalStructure = input.int(1000, "Maximum Historical Structure Events (calculation)", minval=50, maxval=1000, group="Structures")
+maxDisplayedStructureLines = input.int(1000, "Max Structure Lines Actually Drawn (shared drawing-object budget with FVG/trade drawing)", minval=10, maxval=1000, group="Structures")
+structHistoryNbr = maxDisplayedStructureLines
+
+// Fibonacci 1
+isFibo1ToShow = input(true, title = "", group="Structure Fibonacci", inline = "Fibo1")
+fibo1Value = input.float(0.786, title = "", group="Structure Fibonacci", inline = "Fibo1")
+fibo1Color = input(#64b5f6, title = "", group="Structure Fibonacci", inline = "Fibo1")
+fibo1StyleOption = input.string("─", title = "", group="Structure Fibonacci", options=["─", "┈", "╌"], inline = "Fibo1")
+fibo1Style = getLineStyle(fibo1StyleOption)
+fibo1LineWidth = input.int(1, title = "", group="Structure Fibonacci", minval=1, maxval=5, inline = "Fibo1")
+
+// Fibonacci 2
+isFibo2ToShow = input(true, title = "", group="Structure Fibonacci", inline = "Fibo2")
+fibo2Value = input.float(0.705, title = "", group="Structure Fibonacci", inline = "Fibo2")
+fibo2Color = input(#f23645, title = "", group="Structure Fibonacci", inline = "Fibo2")
+fibo2StyleOption = input.string("─", title = "", group="Structure Fibonacci", options=["─", "┈", "╌"], inline = "Fibo2")
+fibo2Style = getLineStyle(fibo2StyleOption)
+fibo2LineWidth = input.int(1, title = "", group="Structure Fibonacci", minval=1, maxval=5, inline = "Fibo2")
+
+// Fibonacci 3
+isFibo3ToShow = input(true, title = "", group="Structure Fibonacci", inline = "Fibo3")
+fibo3Value = input.float(0.618, title = "", group="Structure Fibonacci", inline = "Fibo3")
+fibo3Color = input(#089981, title = "", group="Structure Fibonacci", inline = "Fibo3")
+fibo3StyleOption = input.string("─", title = "", group="Structure Fibonacci", options=["─", "┈", "╌"], inline = "Fibo3")
+fibo3Style = getLineStyle(fibo3StyleOption)
+fibo3LineWidth = input.int(1, title = "", group="Structure Fibonacci", minval=1, maxval=5, inline = "Fibo3")
+
+// Fibonacci 3
+isFibo4ToShow = input(true, title = "", group="Structure Fibonacci", inline = "Fibo4")
+fibo4Value = input.float(0.5, title = "", group="Structure Fibonacci", inline = "Fibo4")
+fibo4Color = input(#4caf50, title = "", group="Structure Fibonacci", inline = "Fibo4")
+fibo4StyleOption = input.string("─", title = "", group="Structure Fibonacci", options=["─", "┈", "╌"], inline = "Fibo4")
+fibo4Style = getLineStyle(fibo4StyleOption)
+fibo4LineWidth = input.int(1, title = "", group="Structure Fibonacci", minval=1, maxval=5, inline = "Fibo4")
+
+// Fibonacci 5
+isFibo5ToShow = input(true, title = "", group="Structure Fibonacci", inline = "Fibo5")
+fibo5Value = input.float(0.382, title = "", group="Structure Fibonacci", inline = "Fibo5")
+fibo5Color = input(#81c784, title = "", group="Structure Fibonacci", inline = "Fibo5")
+fibo5StyleOption = input.string("─", title = "", group="Structure Fibonacci", options=["─", "┈", "╌"], inline = "Fibo5")
+fibo5Style = getLineStyle(fibo5StyleOption)
+fibo5LineWidth = input.int(1, title = "", group="Structure Fibonacci", minval=1, maxval=5, inline = "Fibo5")
+
+// 0.71 fib position (entry/SL/TP) - additive, independent of the Trade
+// Model further down (which only marks ACCEPTED setups after passing the
+// BOS Filters). This simply marks up whichever structure fib is currently
+// being displayed above, using the same 0 (extreme)/0.71 (entry)/1
+// (origin) levels, on every structure - not just accepted ones.
+isFib071PositionToShow = input.bool(true, "Show 0.71 Position (Entry/SL/TP)", group="Structure Fibonacci")
+fib071RiskColor = input.color(color.new(color.red, 70), "Risk Zone Color", group="Structure Fibonacci")
+fib071RewardColor = input.color(color.new(color.green, 70), "Reward Zone Color", group="Structure Fibonacci")
+
+// ============================================================================
+// BOS RESEARCH FILTERS (new) - completely optional, all default OFF. Applied
+// ONLY to same-direction continuation BOS (the original script's own "BOS"
+// case, as opposed to "CHoCH" which is the opposite-direction reversal).
+// With every filter below disabled, output is byte-for-byte identical to
+// the original script - verified by construction, since every filter gate
+// short-circuits to "pass" when its own enable toggle is off (see the
+// isStuctureLowBroken/isStructureHighBroken redefinition further down).
+//
+// NAMING NOTE: the original script already has an ALWAYS-ACTIVE input also
+// called "Minimum Swing Size (%)" (minSwingPercent, group "Structures",
+// feeding bullishContinuationReady/bearishContinuationReady). Filter 3 below
+// is a SEPARATE, independently-toggleable mechanism and would collide with
+// that existing variable name if given the name from the request verbatim -
+// so it's named contMinSwingPercent here instead. The original
+// minSwingPercent input and its behavior are completely untouched.
+// ============================================================================
+enableMinSameDirectionBars = input.bool(false, "Enable Minimum Same-Direction BOS Bars", group="BOS Filters")
+minSameDirectionBars = input.int(10, "Minimum Same-Direction BOS Bars", minval=1, maxval=500, group="BOS Filters")
+
+enableMinRetracement = input.bool(false, "Enable Minimum Retracement Filter", group="BOS Filters")
+minRetracementPercent = input.float(25.0, "Minimum Retracement (%)", minval=0, maxval=100, step=1, group="BOS Filters")
+
+enableMinSwingPercent = input.bool(false, "Enable Minimum Swing Size (%)", group="BOS Filters")
+contMinSwingPercent = input.float(20.0, "Continuation Min Swing Size (%) [Filter 3 - separate from the Structures group's always-on swing filter above]", minval=0, maxval=500, step=1, group="BOS Filters")
+
+enableMinSwingPips = input.bool(false, "Enable Minimum Swing Size (Pips)", group="BOS Filters")
+minSwingPips = input.float(10.0, "Minimum Swing Size (Pips)", minval=0, step=0.1, group="BOS Filters")
+pipSize = input.float(0.0001, "Pip Size", minval=0.000001, group="BOS Filters")
+
+enableMinBosDistance = input.bool(false, "Enable Minimum BOS Price Distance", group="BOS Filters")
+minBosDistancePips = input.float(20.0, "Minimum BOS Price Distance (Pips)", minval=0, step=0.1, group="BOS Filters")
+
+enableAtrFilter = input.bool(false, "Enable ATR Minimum Swing Filter", group="BOS Filters")
+atrLength = input.int(14, "ATR Length", minval=1, maxval=200, group="BOS Filters")
+atrMultiplier = input.float(0.5, "Minimum Swing ATR Multiplier", minval=0, step=0.1, group="BOS Filters")
+
+filterCombination = input.string("ALL ENABLED FILTERS", "Filter Combination", options=["ALL ENABLED FILTERS", "ANY ENABLED FILTER"], group="BOS Filters")
+
+// ============================================================================
+// IMBALANCE FILTER (new) - separate from BOS Filters above: applies to
+// EVERY accepted setup (BOS and CHoCH alike), not just same-direction
+// continuations. Default OFF, single checkbox - flip it on to only allow
+// a setup to actually ENTER a trade if at least one FVG (imbalance) formed
+// somewhere inside its own Fibonacci range. Structure (BOS/CHoCH lines,
+// the structure engine itself) is completely untouched either way - a
+// filtered-out setup still shows on the chart exactly as before, its
+// Trade Fibonacci lines still draw, it just never enters a trade (stays
+// pending until it invalidates normally via an SL body-breach, same as
+// any other setup that's simply never touched 0.71).
+//
+// Deliberately NOT read from the (currently-displayed-only, capped at
+// fvgHistoryNbr=50) fvgBoxes array - by the time a setup's range is many
+// bars in the past, the FVG that occurred inside it may already have
+// aged out of that display-only window, which would wrongly say "no
+// imbalance" for ranges that genuinely had one. legHasImbalance instead
+// tracks the *current developing leg* directly off the same raw
+// isBullishFVG/isBearishFVG pattern match FVG detection itself uses,
+// independent of anything display-related, so it's exact for every leg,
+// not just the last ~50.
+// ============================================================================
+requireImbalanceInRange = input.bool(false, "Require FVG Inside Fibonacci Range", group="Imbalance Filter")
+
+showBosFilterDebug = input.bool(false, "Show BOS Filter Debug", group="Debug")
+showDebugTables = input.bool(true, "Show Debug Tables", group="Debug")
+// ============================================================================
+// TRADE MODEL (revised per latest spec) - consumes accepted BOS/CHoCH events
+// only, does not feed back into the structure engine. One setup per
+// accepted event. Setup states: ACTIVE_SETUP, INVALIDATED, ENTERED,
+// CLOSED_WIN, CLOSED_LOSS. An unentered setup is invalidated (never
+// deleted) by the next accepted event; an entered trade is fully
+// independent of later events and only closes via TP/SL.
+// ============================================================================
+showTradeFib = input.bool(true, "Show Trade Fibonacci", group="Trade Fibonacci")
+fibLineLengthBars = input.int(8, "Fibonacci Line Length (Bars) - horizontal display length only, does NOT change the price range/levels", minval=1, maxval=100, group="Trade Fibonacci")
+maxDisplayedTradeFibs = input.int(100, "Max Trade Fibonacci Ranges Actually Drawn (most recent)", minval=1, maxval=300, group="Trade Fibonacci")
+bullishFibColor = input.color(color.new(color.lime, 60), "Bullish Trade Fib Color", group="Trade Fibonacci")
+bearishFibColor = input.color(color.new(color.red, 60), "Bearish Trade Fib Color", group="Trade Fibonacci")
+tpColor = input.color(color.new(color.green, 0), "TP Color", group="Trade Fibonacci")
+slColor = input.color(color.new(color.red, 0), "SL Color", group="Trade Fibonacci")
+
+sameBarExitMode = input.string("Conservative", "Same Candle TP/SL", options=["Conservative", "Optimistic", "Ignore"], group="Trade Model")
+allowMultipleOpenTrades = input.bool(true, "Allow Multiple Open Trades", group="Trade Model")
+maxStoredTradeEvents = input.int(5000, "Maximum Stored Trade Events", minval=100, maxval=10000, group="Trade Model")
+
+// Defaulted off - only the Trade Fibonacci (TP 0 / ENTRY 0.71 / SL 1
+// lines+labels, controlled separately by showTradeFib/showTradeLabels
+// below) is shown by default now; these three control the "position"
+// visuals (profit/loss zone boxes, entry line/marker, win/loss exit
+// labels), which the underlying ENTERED-trade tracking still computes and
+// these can still be flipped back on any time - nothing was deleted.
+showTradeZones = input.bool(true, "Show Trade Zones", group="Trade Visualization")
+showTradeEntryLine = input.bool(false, "Show Entry Line", group="Trade Visualization")
+showTradeExitMarkers = input.bool(false, "Show TP/SL Markers", group="Trade Visualization")
+showTradeLabels = input.bool(true, "Show Trade Labels", group="Trade Visualization")
+showInvalidatedRanges = input.bool(true, "Show Invalidated Ranges", group="Trade Visualization")
+profitZoneColor = input.color(color.new(color.green, 80), "Profit Zone", group="Trade Visualization")
+lossZoneColor = input.color(color.new(color.red, 80), "Loss Zone", group="Trade Visualization")
+entryColor = input.color(color.white, "Entry Color", group="Trade Visualization")
+maxTradeVisualizations = input.int(500, "Maximum Trade Visualizations (drawing objects only - never limits calculations/statistics)", minval=10, maxval=500, group="Trade Visualization")
+
+
+// Draw FVG into graph
+FVGDraw(_boxes, _fvgTypes, _isFvgMitigated, _fvgLabels) => 
+
+    // Loop into all values of the array
+    for [index, value] in _boxes
+        
+        // Processing bullish FVG
+        if(array.get(_fvgTypes, index))
+
+            // Check if FVG has been totally mitigated
+            if(low <= box.get_bottom(value))
+                array.remove(_boxes, index)
+                array.remove(_fvgTypes, index)
+                array.remove(_isFvgMitigated, index)
+                label.delete(array.get(_fvgLabels, index))
+                array.remove(_fvgLabels, index)
+                box.delete(value)
+            else 
+                if(low < box.get_top((value)))
+                    box.set_bgcolor(value, mitigatedFvgColor)    
+
+                    // Mitigated FVG Alert
+                    if(not(array.get(_isFvgMitigated, index)))
+                        alert("FVG has been mitigated", alert.freq_once_per_bar)
+                        array.set(_isFvgMitigated, index, true)
+
+                    // Reduce FVG if needed
+                    if(isMitigatedFvgToReduce)
+                        box.set_top(value, low)
+
+                box.set_right(value, bar_index)
+                label.set_x(array.get(_fvgLabels, index), (box.get_left(value) + box.get_right(value)) / 2 )
+                label.set_y(array.get(_fvgLabels, index), box.get_top(value) - (box.get_top(value) - box.get_bottom(value)) / 2)
+
+        // Processing bearish FVG
+        else
+
+            // Check if FVG has been mitigated
+            if(high >= box.get_top(value))
+                array.remove(_boxes, index)
+                array.remove(_fvgTypes, index)
+                array.remove(_isFvgMitigated, index)
+                label.delete(array.get(_fvgLabels, index))
+                array.remove(_fvgLabels, index)
+                box.delete(value)
+            else
+                if(high > box.get_bottom((value)))
+                    box.set_bgcolor(value, mitigatedFvgColor)    
+
+                    // Mitigated FVG Alert
+                    if(not(array.get(_isFvgMitigated, index)))
+                        alert("FVG has been mitigated", alert.freq_once_per_bar)
+                        array.set(_isFvgMitigated, index, true)
+
+                    // Reduce FVG if needed
+                    if(isMitigatedFvgToReduce)
+                        box.set_bottom(value, high)
+
+                box.set_right(value, bar_index)
+                label.set_x(array.get(_fvgLabels, index), (box.get_left(value) + box.get_right(value)) / 2 )
+                label.set_y(array.get(_fvgLabels, index), box.get_top(value) - (box.get_top(value) - box.get_bottom(value)) / 2)
+
+// Arrays variable
+var array<line> structureLines = array.new_line(0)
+var array<label> structureLabels = array.new_label(0)
+var array<box>  fvgBoxes = array.new_box(0)
+var array<bool> fvgTypes = array.new_bool(0)
+var array<label> fvgLabels = array.new_label(0)
+var array<bool> isFvgMitigated = array.new_bool(0)
+
+// Price variables
+var float structureHigh = 0.0
+var float structureLow = 0.0
+var float continuationRange = 0.0
+var float fibo1Price = 0.0
+var float fibo2Price = 0.0
+var float fibo3Price = 0.0
+var float fibo4Price = 0.0
+var float fibo5Price = 0.0
+
+// Index variable
+var int structureHighStartIndex = 0
+var int structureLowStartIndex = 0
+var int structureDirection = 0
+// TRADE MODEL REWRITE: time captured alongside every bar-index anchor
+// update below, so historical drawing objects can use xloc.bar_time and
+// avoid Pine's "too far from current bar" distance error for old events.
+var int structureHighStartTime = na
+var int structureLowStartTime = na
+var int fibo1StartIndex = 0
+var int fibo2StartIndex = 0
+var int fibo3StartIndex = 0
+var int fibo4StartIndex = 0
+var int fibo5StartIndex = 0
+// Time counterparts, used for xloc.bar_time drawing below - the "current
+// structure" line and these 5 Fibonacci lines used bar_index-based x1/x2
+// (RE10026 "too far from current bar" once structureHighStartIndex/
+// structureLowStartIndex go stale for thousands of bars, which the
+// tighter BOS Filters settings now make far more likely - a real trend
+// can run a long time between accepted events). Every other drawing
+// object in this script already switched to xloc.bar_time for exactly
+// this reason (see the TRADE MODEL REWRITE note above); this brings the
+// current-structure/Fibonacci display in line with that.
+var int fibo1StartTime = na
+var int fibo2StartTime = na
+var int fibo3StartTime = na
+var int fibo4StartTime = na
+var int fibo5StartTime = na
+
+// Line variable
+var line structureHighLine = na
+var line structureLowLine = na
+var line fibo1Line = na
+var line fibo2Line = na
+var line fibo3Line = na
+var line fibo4Line = na
+var line fibo5Line = na
+
+// Label variable
+var label fibo1Label = na
+var label fibo2Label = na
+var label fibo3Label = na
+var label fibo4Label = na
+var label fibo5Label = na
+
+// 0.71 fib position (entry/SL/TP) - see the "Structure Fibonacci" input
+// group and the drawing block right after the Fibo 1-5 display below.
+var line fib071EntryLine = na
+var box fib071RiskBox = na
+var box fib071RewardBox = na
+var label fib071Label = na
+
+var bool isBOSAlert = false
+var bool isCHOCHAlert = false
+
+// CHoCH REWRITE: counters for actual accepted events (incremented inside
+// the accept blocks below, which only execute once - and after - the
+// filter layer has already accepted the event, so a filtered-out
+// continuation candidate is correctly never counted).
+var int bullishBosCount = 0
+var int bearishBosCount = 0
+var int bullishChochCount = 0
+var int bearishChochCount = 0
+
+
+// ============================================================================
+// TRADE MODEL EVENT STORAGE (revised) - one entry per accepted BOS/CHoCH.
+// Bounded by maxStoredTradeEvents, NOT by the drawing-object limit.
+// evStatus: "ACTIVE_SETUP" (waiting for 0.71), "INVALIDATED" (never
+// entered, superseded by a newer accepted event), "ENTERED" (0.71 touched,
+// exactly once), "CLOSED_WIN", "CLOSED_LOSS". Once a setup leaves
+// ACTIVE_SETUP it can never re-enter that state or generate another entry.
+// ============================================================================
+var int[] evBar = array.new_int()
+var int[] evTime = array.new_int()
+var string[] evType = array.new_string()
+var string[] evDirection = array.new_string()
+var float[] evRangeStartPrice = array.new_float()
+var int[] evRangeStartBar = array.new_int()
+var int[] evRangeStartTime = array.new_int()
+var float[] evRangeEndPrice = array.new_float()
+var int[] evRangeEndBar = array.new_int()
+var int[] evRangeEndTime = array.new_int()
+var float[] evFib0 = array.new_float()
+var float[] evFib071 = array.new_float()
+var float[] evFib1 = array.new_float()
+var string[] evStatus = array.new_string()
+var float[] evEntryPrice = array.new_float()
+var int[] evEntryBar = array.new_int()
+var int[] evEntryTime = array.new_int()
+var int[] evExitBar = array.new_int()
+var int[] evExitTime = array.new_int()
+var float[] evExitPrice = array.new_float()
+var float[] evR = array.new_float()
+
+// Per-trade drawing object handles - na until created, updated/frozen as
+// the trade progresses. Indexed identically to the evXxx arrays above.
+var box[] evProfitBox = array.new_box()
+var box[] evLossBox = array.new_box()
+// Sliding-window record of the currently-drawn trade zone boxes, oldest
+// first - see the maxTradeVisualizations eviction below, which deletes from
+// the front of these once the cap is hit so the *most recent* trades always
+// stay visible/clickable instead of a one-time lifetime cap silently going
+// dark once a long backtest passes 500 total trades.
+var box[] vizProfitBoxes = array.new_box()
+var box[] vizLossBoxes = array.new_box()
+var line[] evEntryLine = array.new_line()
+var label[] evEntryLabel = array.new_label()
+var label[] evExitLabel = array.new_label()
+
+// Small "active" index lists so per-bar entry/exit checks only touch
+// setups/trades that could actually still be waiting - not the full
+// multi-thousand event history. Indices point into the evXxx arrays above.
+// pendingIdx holds ACTIVE_SETUP indices; openIdx holds ENTERED (open trade)
+// indices.
+var int[] pendingIdx = array.new_int()
+var int[] openIdx = array.new_int()
+var bool hasOpenTrade = false
+var int skippedByMultiTradeLimit = 0
+
+// ============================================================================
+// FIBONACCI LEG TRACKER (new, parallel, independent) - tracks the true
+// extreme reached since the last direction change, freezing it the moment
+// retracement begins (reusing the existing bullishContinuationReady/
+// bearishContinuationReady flags as the "has retracement started" signal,
+// since that's what those flags already represent - not inventing a new
+// definition). This does NOT modify structureHigh/structureLow/
+// structureDirection or any Ludo detection variable - it only supplies a
+// more precise anchor for the Fibonacci fields on the event that was just
+// created this bar, by overwriting those specific array slots after the
+// fact, never the detection logic itself.
+// FIBONACCI ANCHOR VERIFICATION (debug only) - the exact structureHigh/
+// structureLow values used for the MOST RECENTLY created Fibonacci event,
+// captured at the same instant the event is created, alongside this same
+// bar's own candle prices - so you can directly compare "the anchor the
+// Fibonacci used" against "this candle's own high/low/close" on the chart
+// and confirm whether they differ (and by how much), rather than relying
+// on code review alone. Explicitly named per the request.
+var float fibStructuralHigh = na
+var int fibStructuralHighBar = na
+var float tradeFibHigh = na
+var float tradeFibLow = na
+var int tradeFibHighBar = na
+var int tradeFibLowBar = na
+var float fibStructuralLow = na
+var int fibStructuralLowBar = na
+var float lastEventBarClose = na
+var float lastEventBarHigh = na
+var float lastEventBarLow = na
+
+// Drawing object handles for the bounded recent-window Fibonacci display.
+var line[] tradeFibLines = array.new_line()
+var label[] tradeFibLabels = array.new_label()
+
+// IMBALANCE FILTER STATE (new) - legHasImbalance tracks whether the
+// CURRENTLY-developing leg (from wherever structureHigh/structureLow's
+// anchor last fully reset, per the structure engine's own "Update values
+// for new structure" blocks below) has had an FVG anywhere inside it so
+// far. Reset to false in those same two blocks, right after being read
+// for the event that just got created from the leg that's ending - so a
+// BOS's stored value is exact and final (its range is already fully
+// formed at creation), while a CHoCH's stored value keeps getting OR'd
+// forward in the per-bar processing loop below (mirroring exactly how
+// that same loop already forward-tracks a CHoCH's evFib0/evFib071 until
+// its own range freezes).
+var bool legHasImbalance = false
+// Parallel to the evXxx arrays below - see requireImbalanceInRange's
+// comment above for why this doesn't reuse the FVG display array.
+var bool[] evHasImbalance = array.new_bool()
+
+// ============================================================================
+// BOS FILTER STATE (new) - all state needed by the 6 optional filters.
+// Nothing here is read by the original detection formulas below; it only
+// feeds the new filter-gate added to isStuctureLowBroken/isStructureHighBroken.
+// ============================================================================
+var int lastBullishBosBar = na
+var int lastBearishBosBar = na
+var float lastBullishBosLevel = na
+var float lastBearishBosLevel = na
+
+var float filter2BullishFrozenHigh = na
+var float filter2BullishFrozenRange = na
+var bool filter2BullishRetraceSatisfied = false
+var float filter2BearishFrozenLow = na
+var float filter2BearishFrozenRange = na
+var bool filter2BearishRetraceSatisfied = false
+
+var int rawBosCandidateCount = 0
+var int filterAcceptedCount = 0
+var int rejectedByMinBars = 0
+var int rejectedByRetracement = 0
+var int rejectedBySwingPct = 0
+var int rejectedBySwingPips = 0
+var int rejectedByBosDistance = 0
+var int rejectedByAtr = 0
+var string lastFilterDecision = "N/A"
+var string lastFilterReason = "N/A"
+//
+//
+// ==========================================================================================
+//                              FAIR VALUE GAP FINDER PROCESSING                                                                         
+// ==========================================================================================
+//
+//
+// Define FVG type
+isBullishFVG = high[3] < low[1]
+isBearishFVG = low[3] > high[1]
+
+// Marks the current developing leg as having an imbalance, independent of
+// isFvgToShow (a real market fact, not something a display toggle should
+// change) and independent of the FVG display array's own history cap -
+// see requireImbalanceInRange's comment above.
+if isBullishFVG or isBearishFVG
+    legHasImbalance := true
+
+// Bullish FVG process
+if(isBullishFVG and isFvgToShow)
+
+    // Add FVG into FVG's array
+    box _box = box.new(left=bar_index - 2, top=low[1], right=bar_index[1], bottom=high[3], border_style=line.style_solid, border_width=1, bgcolor=bullishFvgColor, border_color=color.new(color.green, 100))
+    label _label = label.new(math.ceil((_box.get_left() + _box.get_right()) / 2), _box.get_top() - (_box.get_top() - _box.get_bottom()) / 2, text = "FVG", style = label.style_none, textcolor = color.white)     
+    array.push(fvgBoxes, _box)
+    array.push(fvgTypes, true)
+    array.push(isFvgMitigated, false)
+    array.push(fvgLabels, _label)
+
+    // Check if FVG to show is upper than user parameter
+    if(array.size(fvgBoxes) > fvgHistoryNbr + 1)
+
+        // Delete the FVG and its index from arrays
+        box.delete(array.get(fvgBoxes, 0))
+        label.delete(array.get(fvgLabels, 0))
+        array.remove(fvgLabels, 0)
+        array.remove(fvgBoxes, 0)
+        array.remove(fvgTypes, 0)
+        array.remove(isFvgMitigated, 0)
+
+// Bearish FVG process
+if(isBearishFVG and isFvgToShow)
+    
+    // Add FVG into FVG's array
+    box _box = box.new(left=bar_index - 2, top=low[3], right=bar_index[1], bottom=high[1], border_style=line.style_solid, border_width=1, bgcolor=bearishFvgColor, border_color=color.new(color.red, 100))
+    label _label = label.new(math.ceil((_box.get_left() + _box.get_right()) / 2), _box.get_top() - (_box.get_top() - _box.get_bottom()) / 2, text = "FVG", style = label.style_none, textcolor = color.white) 
+    //label.new(bar_index + 20, fibo3Price, text = str.tostring(fibo3Value) + "(" + str.tostring(fibo3Price) + ")", style = label.style_none, textcolor = fibo3Color)    
+    array.push(fvgBoxes, _box)
+    array.push(fvgTypes, false)
+    array.push(isFvgMitigated, false)
+    array.push(fvgLabels, _label)
+
+    // Check if FVG to show is upper than user parameter
+    if(array.size(fvgBoxes) > fvgHistoryNbr + 1)
+        
+        // Delete the FVG and its index from arrays
+        box.delete(array.get(fvgBoxes, 0))
+        label.delete(array.get(fvgLabels, 0))
+        array.remove(fvgLabels, 0)
+        array.remove(fvgBoxes, 0)
+        array.remove(fvgTypes, 0)
+        array.remove(isFvgMitigated, 0)
+
+// Draw FVG
+FVGDraw(fvgBoxes, fvgTypes, isFvgMitigated, fvgLabels)
+//
+//
+// ==========================================================================================
+//                                   STRUCTURES PROCESSING                                                         
+// ==========================================================================================
+//
+//
+// Initialize value for bar 0
+if(bar_index == 0)
+    structureHighStartIndex := bar_index
+    structureLowStartIndex  := bar_index
+    structureHighStartTime := time
+    structureLowStartTime := time
+    structureHigh := high
+    structureLow  := low 
+
+highest = bar_index > 10 ? ta.highest(10) : ta.highest(bar_index + 1)
+highestBar = bar_index > 10 ? ta.highestbars(high, 10) : ta.highestbars(high, bar_index + 1) 
+lowest = bar_index > 10 ? ta.lowest(10) : ta.lowest(bar_index + 1)
+lowestBar = bar_index > 10 ? ta.lowestbars(low, 10) : ta.lowestbars(low, bar_index + 1)
+structureMaxBar = bar_index + get_structure_highest_bar(10)
+structureMinBar = bar_index + get_structure_lowest_bar(10)
+lowStructBreakPrice = isStructBodyCandleBreak ? close : low
+highStructBreakPrice = isStructBodyCandleBreak ? close : high
+minSwingPercent = input.float(20.0, "Minimum Swing Size (%)", minval=0, maxval=100, group="Structures")
+
+var bool bullishContinuationReady = true
+var bool bearishContinuationReady = true
+
+if structureDirection == 2 and not bullishContinuationReady
+    if math.min(open, close) <= structureHigh - continuationRange * minSwingPercent / 100
+        bullishContinuationReady := true
+
+if structureDirection == 1 and not bearishContinuationReady
+    if math.max(open, close) >= structureLow + continuationRange * minSwingPercent / 100
+        bearishContinuationReady := true
+
+
+// ============================================================================
+// CHoCH REWRITE: unified break detection. Previously this variable was two
+// different mechanisms OR'd together - a strict "first bar to cross since
+// the anchor" pattern (used when structureDirection already matched the
+// break direction, i.e. continuation/BOS) and a separate, looser "just
+// check current price every bar" clause (used specifically when
+// structureDirection == 2, i.e. the bearish reversal/CHoCH case) with no
+// such pattern requirement. That gave CHoCH weaker confirmation than BOS
+// for what the request identifies as the same kind of event. Now there is
+// one single break condition, used for both - classification into BOS vs
+// CHoCH happens entirely afterward, based on structureDirection, not by
+// using a different detection formula.
+//
+// The trailing "(structureDirection != 2 or bearishContinuationReady)" /
+// "(structureDirection != 1 or bullishContinuationReady)" gates from the
+// original are also removed here: bullishContinuationReady is set true the
+// instant a bearish phase begins (line ~558) and bearishContinuationReady
+// the instant a bullish phase begins (line ~606), so each gate was already
+// satisfied for the entire duration of the phase it applied to - a no-op,
+// not a real constraint, confirmed by inspection before removing it rather
+// than assumed.
+// ============================================================================
+isStuctureLowBrokenRaw = lowStructBreakPrice < structureLow and lowStructBreakPrice[1] >= structureLow and lowStructBreakPrice[2] >= structureLow and lowStructBreakPrice[3] >= structureLow and bar_index[1] > structureLowStartIndex and bar_index[2] > structureLowStartIndex and bar_index[3] > structureLowStartIndex
+isStructureHighBrokenRaw = highStructBreakPrice > structureHigh and highStructBreakPrice[1] <= structureHigh and highStructBreakPrice[2] <= structureHigh and highStructBreakPrice[3] <= structureHigh and bar_index[1] > structureHighStartIndex and bar_index[2] > structureHighStartIndex and bar_index[3] > structureHighStartIndex
+
+// ============================================================================
+// BOS FILTER LAYER (new) - sits strictly between raw detection above and
+// acceptance below. The original two lines above (now suffixed Raw) are
+// completely unchanged from the source script. This section only decides
+// whether a RAW candidate that happens to be a SAME-DIRECTION continuation
+// (structureDirection already matching the break direction) gets accepted.
+// Opposite-direction breaks (CHoCH) are never touched here - see the
+// "not lowIsContinuation" / "not highIsContinuation" terms in the final
+// isStuctureLowBroken/isStructureHighBroken definitions further below,
+// which always pass through unfiltered.
+// ============================================================================
+bool lowIsContinuation = isStuctureLowBrokenRaw and structureDirection == 1
+bool highIsContinuation = isStructureHighBrokenRaw and structureDirection == 2
+
+// Filter 1: minimum bars since the last SAME-DIRECTION accepted BOS.
+bool f1PassLow = not enableMinSameDirectionBars or na(lastBearishBosBar) or (bar_index - lastBearishBosBar >= minSameDirectionBars)
+bool f1PassHigh = not enableMinSameDirectionBars or na(lastBullishBosBar) or (bar_index - lastBullishBosBar >= minSameDirectionBars)
+
+// Filter 2: price must have retraced at least minRetracementPercent of the
+// PREVIOUS same-direction BOS leg (frozen at that BOS's acceptance) before
+// this continuation counts. filter2*RetraceSatisfied is a one-way latch,
+// updated every bar further below, independent of whether a break is being
+// evaluated this specific bar.
+bool f2PassHigh = not enableMinRetracement or na(filter2BullishFrozenHigh) or filter2BullishRetraceSatisfied
+bool f2PassLow = not enableMinRetracement or na(filter2BearishFrozenLow) or filter2BearishRetraceSatisfied
+
+// Filter 3: the CURRENT (about to be confirmed) leg's size, as a percentage
+// of the PREVIOUS leg's frozen range (continuationRange - already computed
+// by the unchanged original logic at each BOS).
+bool f3PassHigh = not enableMinSwingPercent or continuationRange <= 0 or (structureHigh - structureLow) >= continuationRange * contMinSwingPercent / 100
+bool f3PassLow = not enableMinSwingPercent or continuationRange <= 0 or (structureHigh - structureLow) >= continuationRange * contMinSwingPercent / 100
+
+// Filter 4: absolute minimum size of the current leg, in pips.
+bool f4PassHigh = not enableMinSwingPips or (structureHigh - structureLow) >= minSwingPips * pipSize
+bool f4PassLow = not enableMinSwingPips or (structureHigh - structureLow) >= minSwingPips * pipSize
+
+// Filter 5: the new BOS level must be at least minBosDistancePips beyond
+// the previous same-direction BOS level.
+bool f5PassHigh = not enableMinBosDistance or na(lastBullishBosLevel) or (structureHigh - lastBullishBosLevel) >= minBosDistancePips * pipSize
+bool f5PassLow = not enableMinBosDistance or na(lastBearishBosLevel) or (lastBearishBosLevel - structureLow) >= minBosDistancePips * pipSize
+
+// Filter 6: ATR-relative minimum size of the current leg.
+float atrVal = ta.atr(atrLength)
+bool f6PassHigh = not enableAtrFilter or (structureHigh - structureLow) >= atrVal * atrMultiplier
+bool f6PassLow = not enableAtrFilter or (structureHigh - structureLow) >= atrVal * atrMultiplier
+
+int enabledCount = (enableMinSameDirectionBars ? 1 : 0) + (enableMinRetracement ? 1 : 0) + (enableMinSwingPercent ? 1 : 0) + (enableMinSwingPips ? 1 : 0) + (enableMinBosDistance ? 1 : 0) + (enableAtrFilter ? 1 : 0)
+
+int passedCountHigh = (enableMinSameDirectionBars and f1PassHigh ? 1 : 0) + (enableMinRetracement and f2PassHigh ? 1 : 0) + (enableMinSwingPercent and f3PassHigh ? 1 : 0) + (enableMinSwingPips and f4PassHigh ? 1 : 0) + (enableMinBosDistance and f5PassHigh ? 1 : 0) + (enableAtrFilter and f6PassHigh ? 1 : 0)
+int passedCountLow = (enableMinSameDirectionBars and f1PassLow ? 1 : 0) + (enableMinRetracement and f2PassLow ? 1 : 0) + (enableMinSwingPercent and f3PassLow ? 1 : 0) + (enableMinSwingPips and f4PassLow ? 1 : 0) + (enableMinBosDistance and f5PassLow ? 1 : 0) + (enableAtrFilter and f6PassLow ? 1 : 0)
+
+bool continuationFiltersPassHigh = enabledCount == 0 or (filterCombination == "ALL ENABLED FILTERS" ? passedCountHigh == enabledCount : passedCountHigh > 0)
+bool continuationFiltersPassLow = enabledCount == 0 or (filterCombination == "ALL ENABLED FILTERS" ? passedCountLow == enabledCount : passedCountLow > 0)
+
+// Rejection-reason bookkeeping (debug only) - runs only for continuation
+// candidates that actually fail, so counters reflect genuine rejections.
+if highIsContinuation
+    rawBosCandidateCount += 1
+    if not continuationFiltersPassHigh
+        string reasonH = ""
+        if enableMinSameDirectionBars and not f1PassHigh
+            reasonH := reasonH + "MIN BARS + "
+            rejectedByMinBars += 1
+        if enableMinRetracement and not f2PassHigh
+            reasonH := reasonH + "RETRACEMENT + "
+            rejectedByRetracement += 1
+        if enableMinSwingPercent and not f3PassHigh
+            reasonH := reasonH + "SWING % + "
+            rejectedBySwingPct += 1
+        if enableMinSwingPips and not f4PassHigh
+            reasonH := reasonH + "SWING PIPS + "
+            rejectedBySwingPips += 1
+        if enableMinBosDistance and not f5PassHigh
+            reasonH := reasonH + "BOS DISTANCE + "
+            rejectedByBosDistance += 1
+        if enableAtrFilter and not f6PassHigh
+            reasonH := reasonH + "ATR + "
+            rejectedByAtr += 1
+        lastFilterDecision := "REJECTED"
+        lastFilterReason := str.substring(reasonH, 0, math.max(str.length(reasonH) - 3, 0))
+    else
+        lastFilterDecision := "ACCEPTED"
+        lastFilterReason := "NONE"
+        filterAcceptedCount += 1
+if lowIsContinuation
+    rawBosCandidateCount += 1
+    if not continuationFiltersPassLow
+        string reasonL = ""
+        if enableMinSameDirectionBars and not f1PassLow
+            reasonL := reasonL + "MIN BARS + "
+            rejectedByMinBars += 1
+        if enableMinRetracement and not f2PassLow
+            reasonL := reasonL + "RETRACEMENT + "
+            rejectedByRetracement += 1
+        if enableMinSwingPercent and not f3PassLow
+            reasonL := reasonL + "SWING % + "
+            rejectedBySwingPct += 1
+        if enableMinSwingPips and not f4PassLow
+            reasonL := reasonL + "SWING PIPS + "
+            rejectedBySwingPips += 1
+        if enableMinBosDistance and not f5PassLow
+            reasonL := reasonL + "BOS DISTANCE + "
+            rejectedByBosDistance += 1
+        if enableAtrFilter and not f6PassLow
+            reasonL := reasonL + "ATR + "
+            rejectedByAtr += 1
+        lastFilterDecision := "REJECTED"
+        lastFilterReason := str.substring(reasonL, 0, math.max(str.length(reasonL) - 3, 0))
+    else
+        lastFilterDecision := "ACCEPTED"
+        lastFilterReason := "NONE"
+        filterAcceptedCount += 1
+
+// Final accept/reject: opposite-direction (CHoCH) and initial-direction
+// breaks always pass through unfiltered; only same-direction continuation
+// candidates are gated by the filter layer above.
+int lowBreakBar = na
+int highBreakBar = na
+
+if lowStructBreakPrice < structureLow
+    lowBreakBar := bar_index
+
+if highStructBreakPrice > structureHigh
+    highBreakBar := bar_index
+isStuctureLowBroken = isStuctureLowBrokenRaw and (not lowIsContinuation or continuationFiltersPassLow)
+isStructureHighBroken = isStructureHighBrokenRaw and (not highIsContinuation or continuationFiltersPassHigh)
+
+// Filter 2's retracement latch - updated every bar, independent of whether
+// a break is being evaluated. Must run before the accept blocks below so a
+// same-bar retracement-then-break isn't possible, and after the gate above
+// so this bar's OWN retracement doesn't retroactively satisfy the filter
+// for this SAME bar's candidate.
+if not na(filter2BullishFrozenHigh) and not filter2BullishRetraceSatisfied
+    if math.min(open, close) <= filter2BullishFrozenHigh - filter2BullishFrozenRange * minRetracementPercent / 100
+        filter2BullishRetraceSatisfied := true
+if not na(filter2BearishFrozenLow) and not filter2BearishRetraceSatisfied
+    if math.max(open, close) >= filter2BearishFrozenLow + filter2BearishFrozenRange * minRetracementPercent / 100
+        filter2BearishRetraceSatisfied := true
+
+//bearish
+//if((low < structureLow and low[1] >= structureLow and low[2] >= structureLow and low[3] >= structureLow and bar_index[1] >  structureLowStartIndex and bar_index[2] >  structureLowStartIndex and bar_index[3] >  structureLowStartIndex) or (structureDirection == 2 and low < structureLow))
+if(isStuctureLowBroken)
+    // Check if structures to show is upper than user parameter
+    if(array.size(structureLines) >= structHistoryNbr)
+
+        // Delete the line and its index from arrays
+        d.delete_line(array.get(structureLines, 0), array.get(structureLabels, 0))
+        array.remove(structureLabels, 0)
+        array.remove(structureLines, 0)
+        
+
+    // Create BOS line
+    if(structureDirection == 1)  
+        array.push(structureLines, line.new(x1=structureLowStartTime, y1=structureLow, x2=time, y2=structureLow, xloc=xloc.bar_time, extend=extend.none, color=bearishBosColor, style=bosLineStyle, width=bosLineWidth))
+        array.push(structureLabels, label.new(x=int((time + structureLowStartTime) / 2), y=structureLow, xloc=xloc.bar_time, text="BOS", style=label.style_none, textcolor=bearishBosColor))
+        isBOSAlert := true
+        bearishBosCount += 1
+        // TRADE MODEL: create a bearish trade opportunity from the exact
+        // range that caused this BOS - structureHigh/structureLow here are
+        // still the PRE-reset values (this event's own range), captured
+        // before the "Update values for new structure" block below moves
+        // them to the new leg.
+        // SETUP INVALIDATION: a new accepted BOS/CHoCH invalidates every
+        // other currently-pending setup - restored after it was removed
+        // entirely (which let many small overlapping continuation-BOS
+        // setups from the same trending move all stay pending
+        // simultaneously, each independently entering and getting stopped
+        // out as price chopped within the trend). SAME-BAR ENTRY PRIORITY:
+        // skip invalidating any pending setup whose own 0.71 this bar's
+        // wick already reached - a real trader would have been filled
+        // before this new event confirmed, so that setup proceeds to the
+        // ENTRY loop normally instead of being wiped here.
+        // NO-OVERLAP PROTECTION (bearish continuation only): this new leg's
+        // own high (structureHigh, still the pre-reset value here) is the
+        // most recent pullback peak that seeded THIS BOS. If that peak is
+        // still BELOW an older bearish pending setup's own TP (evFib0, a
+        // high value for a bearish setup), this new leg never traded back
+        // up into that older setup's zone at all - it's a separate, lower
+        // structure, not a redundant overlapping one from the same chop.
+        // Leave it pending instead of wiping it. Setups from the SAME
+        // crowded zone (new leg's peak still at/above old TP) are still
+        // invalidated exactly as before - this only adds an exemption, it
+        // never invalidates something the old rule wouldn't have.
+        if array.size(pendingIdx) > 0
+            for vi = array.size(pendingIdx) - 1 to 0
+                int vidx = array.get(pendingIdx, vi)
+                string vDir = array.get(evDirection, vidx)
+                float vEntryLvl = array.get(evFib071, vidx)
+                bool vEnteredThisBar = vDir == "BULLISH" ? low <= vEntryLvl : high >= vEntryLvl
+                bool vProtected = vDir == "BEARISH" and structureHigh < array.get(evFib0, vidx)
+                if not vEnteredThisBar and not vProtected
+                    array.set(evStatus, vidx, "INVALIDATED")
+                    array.remove(pendingIdx, vi)
+
+        if array.size(evBar) >= maxStoredTradeEvents
+            array.shift(evBar)
+            array.shift(evTime)
+            array.shift(evType)
+            array.shift(evDirection)
+            array.shift(evRangeStartPrice)
+            array.shift(evRangeStartBar)
+            array.shift(evRangeStartTime)
+            array.shift(evRangeEndPrice)
+            array.shift(evRangeEndBar)
+            array.shift(evRangeEndTime)
+            array.shift(evFib0)
+            array.shift(evFib071)
+            array.shift(evFib1)
+            array.shift(evStatus)
+            array.shift(evHasImbalance)
+            array.shift(evEntryPrice)
+            array.shift(evEntryBar)
+            array.shift(evEntryTime)
+            array.shift(evExitBar)
+            array.shift(evExitTime)
+            array.shift(evR)
+            array.shift(evExitPrice)
+            if array.size(evProfitBox) > 0
+                array.shift(evProfitBox)
+            if array.size(evLossBox) > 0
+                array.shift(evLossBox)
+            if array.size(evEntryLine) > 0
+                array.shift(evEntryLine)
+            if array.size(evEntryLabel) > 0
+                array.shift(evEntryLabel)
+            if array.size(evExitLabel) > 0
+                array.shift(evExitLabel)
+            // TRADE MODEL: keep pendingIdx/openIdx valid after a shift -
+            // every stored index must decrement by 1, and any that pointed
+            // at the removed (oldest) element must be dropped entirely.
+            if array.size(pendingIdx) > 0
+                for pi = array.size(pendingIdx) - 1 to 0
+                    int pv = array.get(pendingIdx, pi) - 1
+                    if pv < 0
+                        array.remove(pendingIdx, pi)
+                    else
+                        array.set(pendingIdx, pi, pv)
+            if array.size(openIdx) > 0
+                for oi = array.size(openIdx) - 1 to 0
+                    int ov = array.get(openIdx, oi) - 1
+                    if ov < 0
+                        array.remove(openIdx, oi)
+                    else
+                        array.set(openIdx, oi, ov)
+        array.push(evBar, bar_index)
+        array.push(evTime, time)
+        array.push(evType, "BOS")
+        array.push(evDirection, "BEARISH")
+
+        // Fibonacci anchor: HIGH is already known.
+        array.push(evRangeStartPrice, structureHigh)
+        array.push(evRangeStartBar, structureHighStartIndex)
+        array.push(evRangeStartTime, structureHighStartTime)
+
+        // Fibonacci extreme (LOW/TP): fixed immediately, using the exact
+        // same structureLow value this event's own BOS line is drawn at -
+        // never updated afterward, so TP always matches the visible line.
+        float bearBosFibRange = structureHigh - structureLow
+        array.push(evRangeEndPrice, structureLow)
+        array.push(evRangeEndBar, structureLowStartIndex)
+        array.push(evRangeEndTime, structureLowStartTime)
+
+        array.push(evFib0, structureLow)
+        array.push(evFib071, structureLow + 0.71 * bearBosFibRange)
+
+        // SL remains the structural HIGH (fixed anchor, already known).
+        array.push(evFib1, structureHigh)
+
+        array.push(evStatus, "ACTIVE_SETUP")
+        // BOS: this leg's range is already fully formed, so this is the
+        // final answer. CHoCH: this is just the starting snapshot - the
+        // per-bar processing loop below keeps OR-ing legHasImbalance into
+        // this same slot until the CHoCH's own range freezes.
+        array.push(evHasImbalance, legHasImbalance)
+
+        array.push(evEntryPrice, na)
+        array.push(evEntryBar, na)
+        array.push(evEntryTime, na)
+        array.push(evExitBar, na)
+        array.push(evExitTime, na)
+        array.push(evExitPrice, na)
+        array.push(evR, na)
+
+        array.push(evProfitBox, na)
+        array.push(evLossBox, na)
+        array.push(evEntryLine, na)
+        array.push(evEntryLabel, na)
+        array.push(evExitLabel, na)
+
+        // Arm immediately - TP/Entry/SL are already fixed above, no
+        // artificial "wait for retracement" delay.
+        array.push(pendingIdx, array.size(evBar) - 1)
+
+        // FIBONACCI ANCHOR VERIFICATION: capture the exact structural
+        // anchors and this bar's own candle prices side by side, so the
+        // debug table can show both for direct comparison.
+        fibStructuralHigh := structureHigh
+        fibStructuralHighBar := structureHighStartIndex
+        fibStructuralLow := structureLow
+        fibStructuralLowBar := structureLowStartIndex
+        lastEventBarClose := close
+        lastEventBarHigh := high
+        lastEventBarLow := low
+        // BOS FILTER: record this accepted bearish continuation BOS for filters 1/2/5
+        lastBearishBosBar := bar_index
+        lastBearishBosLevel := structureLow
+        filter2BearishFrozenLow := structureLow
+        filter2BearishFrozenRange := math.abs(structureHigh - structureLow)
+        filter2BearishRetraceSatisfied := false
+
+    // Create CHoCH line
+    else
+        array.push(structureLines, line.new(x1=structureLowStartTime, y1=structureLow, x2=time, y2=structureLow, xloc=xloc.bar_time, extend=extend.none, color=bearishChochColor, style=chochLineStyle, width=chochLineWidth))
+        array.push(structureLabels, label.new(x=int((time + structureLowStartTime) / 2), y=structureLow, xloc=xloc.bar_time, text="CHoCH", style=label.style_none, textcolor=bearishChochColor))
+        isCHOCHAlert := true
+        bearishChochCount += 1
+        // TRADE MODEL: mirrored from the BOS branch above, evType="CHoCH".
+        // SETUP INVALIDATION: a new accepted BOS/CHoCH invalidates every
+        // other currently-pending setup, unless this bar's wick already
+        // reached that setup's own 0.71 - see the bearish BOS branch above
+        // for the full rationale.
+        if array.size(pendingIdx) > 0
+            for vi = array.size(pendingIdx) - 1 to 0
+                int vidx = array.get(pendingIdx, vi)
+                string vDir = array.get(evDirection, vidx)
+                float vEntryLvl = array.get(evFib071, vidx)
+                bool vEnteredThisBar = vDir == "BULLISH" ? low <= vEntryLvl : high >= vEntryLvl
+                if not vEnteredThisBar
+                    array.set(evStatus, vidx, "INVALIDATED")
+                    array.remove(pendingIdx, vi)
+        if array.size(evBar) >= maxStoredTradeEvents
+            array.shift(evBar)
+            array.shift(evTime)
+            array.shift(evType)
+            array.shift(evDirection)
+            array.shift(evRangeStartPrice)
+            array.shift(evRangeStartBar)
+            array.shift(evRangeStartTime)
+            array.shift(evRangeEndPrice)
+            array.shift(evRangeEndBar)
+            array.shift(evRangeEndTime)
+            array.shift(evFib0)
+            array.shift(evFib071)
+            array.shift(evFib1)
+            array.shift(evStatus)
+            array.shift(evHasImbalance)
+            array.shift(evEntryPrice)
+            array.shift(evEntryBar)
+            array.shift(evEntryTime)
+            array.shift(evExitBar)
+            array.shift(evExitTime)
+            array.shift(evR)
+            array.shift(evExitPrice)
+            if array.size(evProfitBox) > 0
+                array.shift(evProfitBox)
+            if array.size(evLossBox) > 0
+                array.shift(evLossBox)
+            if array.size(evEntryLine) > 0
+                array.shift(evEntryLine)
+            if array.size(evEntryLabel) > 0
+                array.shift(evEntryLabel)
+            if array.size(evExitLabel) > 0
+                array.shift(evExitLabel)
+            // TRADE MODEL: keep pendingIdx/openIdx valid after a shift -
+            // every stored index must decrement by 1, and any that pointed
+            // at the removed (oldest) element must be dropped entirely.
+            if array.size(pendingIdx) > 0
+                for pi = array.size(pendingIdx) - 1 to 0
+                    int pv = array.get(pendingIdx, pi) - 1
+                    if pv < 0
+                        array.remove(pendingIdx, pi)
+                    else
+                        array.set(pendingIdx, pi, pv)
+            if array.size(openIdx) > 0
+                for oi = array.size(openIdx) - 1 to 0
+                    int ov = array.get(openIdx, oi) - 1
+                    if ov < 0
+                        array.remove(openIdx, oi)
+                    else
+                        array.set(openIdx, oi, ov)
+        tradeFibHigh := structureHigh
+        tradeFibLow := structureLow
+        tradeFibHighBar := structureHighStartIndex
+        tradeFibLowBar := structureLowStartIndex
+        array.push(evBar, bar_index)
+        array.push(evTime, time)
+        array.push(evType, "CHoCH")
+        array.push(evDirection, "BEARISH")
+
+        // Fibonacci anchor: HIGH is already known.
+        array.push(evRangeStartPrice, structureHigh)
+        array.push(evRangeStartBar, structureHighStartIndex)
+        array.push(evRangeStartTime, structureHighStartTime)
+
+        // Fibonacci extreme (LOW/TP): NOT known yet - unlike a BOS
+        // continuation (where the peak/trough of the current phase is
+        // already fully developed by the time the break confirms), a
+        // CHoCH is a fresh reversal - the new leg's low hasn't happened
+        // yet. Left na here; the live-then-frozen loop in the per-bar
+        // processing section (CHoCH-only) tracks structureLow forward and
+        // freezes it the moment a genuine pullback confirms.
+        array.push(evRangeEndPrice, na)
+        array.push(evRangeEndBar, na)
+        array.push(evRangeEndTime, na)
+
+        array.push(evFib0, na)
+        array.push(evFib071, na)
+
+        // SL.
+        array.push(evFib1, structureHigh)
+
+        array.push(evStatus, "ACTIVE_SETUP")
+        // BOS: this leg's range is already fully formed, so this is the
+        // final answer. CHoCH: this is just the starting snapshot - the
+        // per-bar processing loop below keeps OR-ing legHasImbalance into
+        // this same slot until the CHoCH's own range freezes.
+        array.push(evHasImbalance, legHasImbalance)
+
+        array.push(evEntryPrice, na)
+        array.push(evEntryBar, na)
+        array.push(evEntryTime, na)
+        array.push(evExitBar, na)
+        array.push(evExitTime, na)
+        array.push(evExitPrice, na)
+        array.push(evR, na)
+
+        array.push(evProfitBox, na)
+        array.push(evLossBox, na)
+        array.push(evEntryLine, na)
+        array.push(evEntryLabel, na)
+        array.push(evExitLabel, na)
+
+        // Arm immediately - TP/Entry/SL are already fixed above.
+        array.push(pendingIdx, array.size(evBar) - 1)
+
+        // FIBONACCI ANCHOR VERIFICATION: capture the exact structural
+        // anchors and this bar's own candle prices side by side, so the
+        // debug table can show both for direct comparison.
+        fibStructuralHigh := structureHigh
+        fibStructuralHighBar := structureHighStartIndex
+        fibStructuralLow := structureLow
+        fibStructuralLowBar := structureLowStartIndex
+        lastEventBarClose := close
+        lastEventBarHigh := high
+        lastEventBarLow := low
+        // BOS FILTER: a CHoCH starts a fresh bearish direction - reset filter
+        // state for the new bearish leg so filters 1/2/5 apply relative to
+        // THIS reversal, not a stale prior bearish leg from before the
+        // intervening bullish phase.
+        lastBearishBosBar := bar_index
+        lastBearishBosLevel := structureLow
+        filter2BearishFrozenLow := structureLow
+        filter2BearishFrozenRange := math.abs(structureHigh - structureLow)
+        filter2BearishRetraceSatisfied := false
+
+    // Update values for new structure
+    structureDirection := 1
+    bearishContinuationReady := false
+    bullishContinuationReady := true
+    continuationRange := math.abs(structureHigh - structureLow)
+    structureHighStartIndex := structureMaxBar
+    structureHighStartTime := time[bar_index - structureMaxBar]
+    structureLowStartIndex  := bar_index
+    structureLowStartTime := time
+    structureHigh := math.max(open[bar_index - structureHighStartIndex], close[bar_index - structureHighStartIndex])
+    structureLow  := math.min(open, close)
+    // New leg starting fresh - the CHoCH event just above already captured
+    // the old leg's final legHasImbalance value into evHasImbalance.
+    legHasImbalance := false
+
+//bullish
+// Check for breakout
+else if(isStructureHighBroken)
+    
+    // Check if structures to show is upper than user parameter
+    if(array.size(structureLines) >= structHistoryNbr)
+
+        // Delete the line and its index from arrays
+        d.delete_line(array.get(structureLines, 0), array.get(structureLabels, 0))
+        array.remove(structureLabels, 0)
+        array.remove(structureLines, 0)
+
+    // Create BOS line
+    if(structureDirection == 2)  
+        array.push(structureLines, line.new(x1=structureHighStartTime, y1=structureHigh, x2=time, y2=structureHigh, xloc=xloc.bar_time, extend=extend.none, color=bullishBosColor, style=bosLineStyle, width=bosLineWidth))
+        array.push(structureLabels, label.new(x=int((time + structureHighStartTime) / 2), y=structureHigh, xloc=xloc.bar_time, text="BOS", style=label.style_none, textcolor=bullishBosColor))
+        isBOSAlert := true
+        bullishBosCount += 1
+        // TRADE MODEL: bullish range - structureLow is 1.0/SL, structureHigh is 0.0/TP.
+        // SETUP INVALIDATION: a new accepted BOS/CHoCH invalidates every
+        // other currently-pending setup, unless this bar's wick already
+        // reached that setup's own 0.71 - see the bearish BOS branch above
+        // for the full rationale.
+        // NO-OVERLAP PROTECTION (bullish continuation only) - see the
+        // bearish BOS branch above for the full rationale, mirrored here:
+        // this new leg's own low (structureLow, pre-reset) is the recent
+        // pullback that seeded THIS BOS. If it's still ABOVE an older
+        // bullish pending setup's own TP (evFib0), this new leg never
+        // traded back down into that older setup's zone - leave it
+        // pending rather than wiping it.
+        if array.size(pendingIdx) > 0
+            for vi = array.size(pendingIdx) - 1 to 0
+                int vidx = array.get(pendingIdx, vi)
+                string vDir = array.get(evDirection, vidx)
+                float vEntryLvl = array.get(evFib071, vidx)
+                bool vEnteredThisBar = vDir == "BULLISH" ? low <= vEntryLvl : high >= vEntryLvl
+                bool vProtected = vDir == "BULLISH" and structureLow > array.get(evFib0, vidx)
+                if not vEnteredThisBar and not vProtected
+                    array.set(evStatus, vidx, "INVALIDATED")
+                    array.remove(pendingIdx, vi)
+        if array.size(evBar) >= maxStoredTradeEvents
+            array.shift(evBar)
+            array.shift(evTime)
+            array.shift(evType)
+            array.shift(evDirection)
+            array.shift(evRangeStartPrice)
+            array.shift(evRangeStartBar)
+            array.shift(evRangeStartTime)
+            array.shift(evRangeEndPrice)
+            array.shift(evRangeEndBar)
+            array.shift(evRangeEndTime)
+            array.shift(evFib0)
+            array.shift(evFib071)
+            array.shift(evFib1)
+            array.shift(evStatus)
+            array.shift(evHasImbalance)
+            array.shift(evEntryPrice)
+            array.shift(evEntryBar)
+            array.shift(evEntryTime)
+            array.shift(evExitBar)
+            array.shift(evExitTime)
+            array.shift(evR)
+            array.shift(evExitPrice)
+            if array.size(evProfitBox) > 0
+                array.shift(evProfitBox)
+            if array.size(evLossBox) > 0
+                array.shift(evLossBox)
+            if array.size(evEntryLine) > 0
+                array.shift(evEntryLine)
+            if array.size(evEntryLabel) > 0
+                array.shift(evEntryLabel)
+            if array.size(evExitLabel) > 0
+                array.shift(evExitLabel)
+            // TRADE MODEL: keep pendingIdx/openIdx valid after a shift -
+            // every stored index must decrement by 1, and any that pointed
+            // at the removed (oldest) element must be dropped entirely.
+            if array.size(pendingIdx) > 0
+                for pi = array.size(pendingIdx) - 1 to 0
+                    int pv = array.get(pendingIdx, pi) - 1
+                    if pv < 0
+                        array.remove(pendingIdx, pi)
+                    else
+                        array.set(pendingIdx, pi, pv)
+            if array.size(openIdx) > 0
+                for oi = array.size(openIdx) - 1 to 0
+                    int ov = array.get(openIdx, oi) - 1
+                    if ov < 0
+                        array.remove(openIdx, oi)
+                    else
+                        array.set(openIdx, oi, ov)
+        array.push(evBar, bar_index)
+        array.push(evTime, time)
+        array.push(evType, "BOS")
+        array.push(evDirection, "BULLISH")
+
+        // Fibonacci range:
+        // LOW = structural low before the BOS (fixed anchor, already known)
+        // HIGH = fixed immediately, using the exact same structureHigh
+        // value this event's own BOS line is drawn at - never updated
+        // afterward, so TP always matches the visible line.
+
+        array.push(evRangeStartPrice, structureLow)
+        array.push(evRangeStartBar, structureLowStartIndex)
+        array.push(evRangeStartTime, structureLowStartTime)
+
+        array.push(evRangeEndPrice, structureHigh)
+        array.push(evRangeEndBar, structureHighStartIndex)
+        array.push(evRangeEndTime, structureHighStartTime)
+
+        float bullBosFibRange = structureHigh - structureLow
+        array.push(evFib0, structureHigh)
+        array.push(evFib071, structureHigh - 0.71 * bullBosFibRange)
+
+        // SL remains the structural LOW (fixed anchor, already known).
+        array.push(evFib1, structureLow)
+
+        array.push(evStatus, "ACTIVE_SETUP")
+        // BOS: this leg's range is already fully formed, so this is the
+        // final answer. CHoCH: this is just the starting snapshot - the
+        // per-bar processing loop below keeps OR-ing legHasImbalance into
+        // this same slot until the CHoCH's own range freezes.
+        array.push(evHasImbalance, legHasImbalance)
+
+
+        array.push(evProfitBox, na)
+        array.push(evLossBox, na)
+        array.push(evEntryLine, na)
+        array.push(evEntryLabel, na)
+        array.push(evExitLabel, na)
+        array.push(evEntryPrice, na)
+        array.push(evEntryBar, na)
+        array.push(evEntryTime, na)
+        array.push(evExitBar, na)
+        array.push(evExitTime, na)
+        array.push(evExitPrice, na)
+        array.push(evR, na)
+        // Arm immediately - TP/Entry/SL are already fixed above.
+        array.push(pendingIdx, array.size(evBar) - 1)
+        // FIBONACCI ANCHOR VERIFICATION: capture the exact structural
+        // anchors and this bar's own candle prices side by side, so the
+        // debug table can show both for direct comparison.
+        fibStructuralHigh := structureHigh
+        fibStructuralHighBar := structureHighStartIndex
+        fibStructuralLow := structureLow
+        fibStructuralLowBar := structureLowStartIndex
+        lastEventBarClose := close
+        lastEventBarHigh := high
+        lastEventBarLow := low
+        // BOS FILTER: record this accepted bullish continuation BOS for filters 1/2/5
+        lastBullishBosBar := bar_index
+        lastBullishBosLevel := structureHigh
+        filter2BullishFrozenHigh := structureHigh
+        filter2BullishFrozenRange := math.abs(structureHigh - structureLow)
+        filter2BullishRetraceSatisfied := false
+
+    // Create CHoCH line
+    else
+        array.push(structureLines, line.new(x1=structureHighStartTime, y1=structureHigh, x2=time, y2=structureHigh, xloc=xloc.bar_time, extend=extend.none, color=bullishChochColor, style=chochLineStyle, width=chochLineWidth))
+        array.push(structureLabels, label.new(x=int((time + structureHighStartTime) / 2), y=structureHigh, xloc=xloc.bar_time, text="CHoCH", style=label.style_none, textcolor=bullishChochColor))
+        isCHOCHAlert := true
+        bullishChochCount += 1
+        // TRADE MODEL: mirrored from the bullish BOS branch above.
+        // SETUP INVALIDATION: a new accepted BOS/CHoCH invalidates every
+        // other currently-pending setup, unless this bar's wick already
+        // reached that setup's own 0.71 - see the bearish BOS branch above
+        // for the full rationale.
+        if array.size(pendingIdx) > 0
+            for vi = array.size(pendingIdx) - 1 to 0
+                int vidx = array.get(pendingIdx, vi)
+                string vDir = array.get(evDirection, vidx)
+                float vEntryLvl = array.get(evFib071, vidx)
+                bool vEnteredThisBar = vDir == "BULLISH" ? low <= vEntryLvl : high >= vEntryLvl
+                if not vEnteredThisBar
+                    array.set(evStatus, vidx, "INVALIDATED")
+                    array.remove(pendingIdx, vi)
+        if array.size(evBar) >= maxStoredTradeEvents
+            array.shift(evBar)
+            array.shift(evTime)
+            array.shift(evType)
+            array.shift(evDirection)
+            array.shift(evRangeStartPrice)
+            array.shift(evRangeStartBar)
+            array.shift(evRangeStartTime)
+            array.shift(evRangeEndPrice)
+            array.shift(evRangeEndBar)
+            array.shift(evRangeEndTime)
+            array.shift(evFib0)
+            array.shift(evFib071)
+            array.shift(evFib1)
+            array.shift(evStatus)
+            array.shift(evHasImbalance)
+            array.shift(evEntryPrice)
+            array.shift(evEntryBar)
+            array.shift(evEntryTime)
+            array.shift(evExitBar)
+            array.shift(evExitTime)
+            array.shift(evR)
+            array.shift(evExitPrice)
+            if array.size(evProfitBox) > 0
+                array.shift(evProfitBox)
+            if array.size(evLossBox) > 0
+                array.shift(evLossBox)
+            if array.size(evEntryLine) > 0
+                array.shift(evEntryLine)
+            if array.size(evEntryLabel) > 0
+                array.shift(evEntryLabel)
+            if array.size(evExitLabel) > 0
+                array.shift(evExitLabel)
+            // TRADE MODEL: keep pendingIdx/openIdx valid after a shift -
+            // every stored index must decrement by 1, and any that pointed
+            // at the removed (oldest) element must be dropped entirely.
+            if array.size(pendingIdx) > 0
+                for pi = array.size(pendingIdx) - 1 to 0
+                    int pv = array.get(pendingIdx, pi) - 1
+                    if pv < 0
+                        array.remove(pendingIdx, pi)
+                    else
+                        array.set(pendingIdx, pi, pv)
+            if array.size(openIdx) > 0
+                for oi = array.size(openIdx) - 1 to 0
+                    int ov = array.get(openIdx, oi) - 1
+                    if ov < 0
+                        array.remove(openIdx, oi)
+                    else
+                        array.set(openIdx, oi, ov)
+        array.push(evBar, bar_index)
+        array.push(evTime, time)
+        array.push(evType, "CHoCH")
+        array.push(evDirection, "BULLISH")
+
+        // Fibonacci anchor: LOW is already known.
+        array.push(evRangeStartPrice, structureLow)
+        array.push(evRangeStartBar, structureLowStartIndex)
+        array.push(evRangeStartTime, structureLowStartTime)
+
+        // Fibonacci extreme (HIGH/TP): NOT known yet - unlike a BOS
+        // continuation (where the peak/trough of the current phase is
+        // already fully developed by the time the break confirms), a
+        // CHoCH is a fresh reversal - the new leg's high hasn't happened
+        // yet. Left na here; the live-then-frozen loop in the per-bar
+        // processing section (CHoCH-only) tracks structureHigh forward and
+        // freezes it the moment a genuine pullback confirms.
+        array.push(evRangeEndPrice, na)
+        array.push(evRangeEndBar, na)
+        array.push(evRangeEndTime, na)
+
+        array.push(evFib0, na)
+        array.push(evFib071, na)
+
+        // SL.
+        array.push(evFib1, structureLow)
+
+        array.push(evStatus, "ACTIVE_SETUP")
+        // BOS: this leg's range is already fully formed, so this is the
+        // final answer. CHoCH: this is just the starting snapshot - the
+        // per-bar processing loop below keeps OR-ing legHasImbalance into
+        // this same slot until the CHoCH's own range freezes.
+        array.push(evHasImbalance, legHasImbalance)
+
+        array.push(evEntryPrice, na)
+        array.push(evEntryBar, na)
+        array.push(evEntryTime, na)
+        array.push(evExitBar, na)
+        array.push(evExitTime, na)
+        array.push(evExitPrice, na)
+        array.push(evR, na)
+
+        array.push(evProfitBox, na)
+        array.push(evLossBox, na)
+        array.push(evEntryLine, na)
+        array.push(evEntryLabel, na)
+        array.push(evExitLabel, na)
+
+        // Arm immediately - TP/Entry/SL are already fixed above.
+        array.push(pendingIdx, array.size(evBar) - 1)
+
+        // FIBONACCI ANCHOR VERIFICATION: capture the exact structural
+        // anchors and this bar's own candle prices side by side, so the
+        // debug table can show both for direct comparison.
+        fibStructuralHigh := structureHigh
+        fibStructuralHighBar := structureHighStartIndex
+        fibStructuralLow := structureLow
+        fibStructuralLowBar := structureLowStartIndex
+        lastEventBarClose := close
+        lastEventBarHigh := high
+        lastEventBarLow := low
+        // BOS FILTER: reset filter state for the new bullish leg, mirrored
+        // from the CHoCH case above.
+        lastBullishBosBar := bar_index
+        lastBullishBosLevel := structureHigh
+        filter2BullishFrozenHigh := structureHigh
+        filter2BullishFrozenRange := math.abs(structureHigh - structureLow)
+        filter2BullishRetraceSatisfied := false
+
+    // Update values for new structure
+    structureDirection := 2
+    continuationRange := math.abs(structureHigh - structureLow)
+    bullishContinuationReady := false
+    bearishContinuationReady := true
+    structureHighStartIndex := bar_index 
+    structureHighStartTime := time
+    structureLowStartIndex  := structureMinBar
+    structureLowStartTime := time[bar_index - structureMinBar]
+    structureHigh := math.max(open, close)
+    structureLow  := math.min(open[bar_index - structureLowStartIndex], close[bar_index - structureLowStartIndex])
+    // New leg starting fresh - the CHoCH event just above already captured
+    // the old leg's final legHasImbalance value into evHasImbalance.
+    legHasImbalance := false
+else
+    isBOSAlert := false
+    isCHOCHAlert := false
+    // Continuous extreme tracking - runs only when neither isStuctureLowBroken
+    // nor isStructureHighBroken fired this bar (see the if/else-if above),
+    // i.e. no new BOS/CHoCH happened. Keeps extending the running high/low
+    // on every bar that makes a new one - each new extreme resets the
+    // countdown below - but once structureExtremeLockBars pass with NO new
+    // extreme, it locks: bar_index - structureHighStartIndex grows past the
+    // threshold and stays there forever (since a locked anchor never
+    // updates again to reset it), so any later, even-more-extreme high/low
+    // is no longer accepted for the remainder of this phase. The original
+    // script's version of this gate used a confusing double-negated
+    // 3-bar check tied to isStructBodyCandleBreak that produced the same
+    // "lock after a gap" behavior but with an unclear, unconfigurable
+    // threshold - this replaces it with the same idea, explicit and tuned
+    // via the "Lock High/Low After N Bars With No New Extreme" input.
+    if(math.max(open, close) > structureHigh and (structureDirection == 0 or structureDirection == 2))
+        if bar_index - structureHighStartIndex <= structureExtremeLockBars
+            structureHigh := math.max(open, close)
+            structureHighStartIndex := bar_index
+            structureHighStartTime := time
+    else if(math.min(open, close) < structureLow and (structureDirection == 0 or structureDirection == 1))
+        if bar_index - structureLowStartIndex <= structureExtremeLockBars
+            structureLow := math.min(open, close)
+            structureLowStartIndex := bar_index
+            structureLowStartTime := time
+
+structureRange = math.abs(structureHigh - structureLow)
+
+// ============================================================================
+// TRADE MODEL: PER-BAR PROCESSING (revised)
+//
+// Ordering note: setup invalidation and new-setup creation already happened
+// above, inside the structure engine's own accept blocks (unchanged,
+// untouched) - by the time execution reaches this point, pendingIdx already
+// reflects the current bar's outcome correctly. Exit-checking below uses
+// only frozen TP/SL against this bar's high/low, and entry-checking uses
+// only frozen 0.71 against this bar's body - neither depends on what the
+// structure engine did earlier on this same bar, so placing both here
+// (after the structure engine) rather than splitting across two separate
+// points in the script is functionally equivalent to a stricter ordering,
+// while keeping the structure engine's own code completely unmodified.
+//
+// No lookahead anywhere in this section - every check uses only this bar's
+// own open/high/low/close.
+// ============================================================================
+// TP/ENTRY/SL FOR BOS EVENTS are fully fixed at creation (see the accept
+// blocks above) - fib0 (TP) is set to the exact same structureHigh/
+// structureLow value used to draw that BOS's own structural line, since a
+// continuation's peak/trough is already fully developed by the moment the
+// break confirms. Nothing here ever touches a BOS-type pending setup.
+//
+// TP/ENTRY FOR CHoCH EVENTS are different: a CHoCH is a fresh reversal, so
+// the new leg's extreme genuinely doesn't exist yet at creation (SL does -
+// it's the anchor from the phase that just ended, already fixed above).
+// This loop tracks the developing structureHigh/structureLow forward -
+// exactly like the always-live Structure Fibonacci display - and freezes
+// TP/Entry the instant a genuine pullback is confirmed
+// (bullishContinuationReady/bearishContinuationReady, "Minimum Swing Size
+// %" in Structures settings). That confirmation is measured against
+// continuationRange - the PRECEDING leg's size, frozen once - not the
+// current, still-growing leg, so unlike a naive "wait for retracement"
+// gate it can't get dragged out indefinitely by new highs resetting the
+// goalpost, and it fires well before price could reach all the way to the
+// 0.71 entry level. Once confirmed, this loop simply stops touching the
+// setup, freezing TP/Entry at the peak reached over all PRIOR bars - never
+// a price reached after entry, and never a future BOS.
+// ============================================================================
+if array.size(pendingIdx) > 0
+    for li = 0 to array.size(pendingIdx) - 1
+        int lidx = array.get(pendingIdx, li)
+        if array.get(evType, lidx) == "CHoCH"
+            // Keep this CHoCH's imbalance flag current with its still-growing
+            // range, exactly like evFib0/evFib071 below - a bar that lands
+            // inside isBullishFVG/isBearishFVG anywhere before the range
+            // freezes (bullish/bearishContinuationReady) counts.
+            array.set(evHasImbalance, lidx, array.get(evHasImbalance, lidx) or legHasImbalance)
+            string lDir = array.get(evDirection, lidx)
+            float lAnchor = array.get(evFib1, lidx)
+            if lDir == "BULLISH" and not bullishContinuationReady
+                float lRange = structureHigh - lAnchor
+                if lRange > 0
+                    array.set(evFib0, lidx, structureHigh)
+                    array.set(evFib071, lidx, structureHigh - 0.71 * lRange)
+                    array.set(evRangeEndPrice, lidx, structureHigh)
+                    array.set(evRangeEndBar, lidx, structureHighStartIndex)
+                    array.set(evRangeEndTime, lidx, structureHighStartTime)
+            else if lDir == "BEARISH" and not bearishContinuationReady
+                float lRange = lAnchor - structureLow
+                if lRange > 0
+                    array.set(evFib0, lidx, structureLow)
+                    array.set(evFib071, lidx, structureLow + 0.71 * lRange)
+                    array.set(evRangeEndPrice, lidx, structureLow)
+                    array.set(evRangeEndBar, lidx, structureLowStartIndex)
+                    array.set(evRangeEndTime, lidx, structureLowStartTime)
+
+// ============================================================================
+// PENDING SETUP INVALIDATION (SL body-breach only) - a pending (not yet
+// entered) setup is cancelled only when a candle BODY closes beyond ITS
+// OWN fib1 (SL) - the same body-close basis the structure engine itself
+// uses for BOS/CHoCH confirmation (isStructBodyCandleBreak).
+//
+// TP breach is deliberately NOT an invalidation condition, even though an
+// earlier version of this check included it. A BOS's TP is fixed at
+// creation, but price is completely expected to keep pushing beyond that
+// fixed level before ever pulling back to 0.71 - that's just the
+// continuing move, not a new confirmed BOS (confirming one requires its
+// own separate pullback gate, bullishContinuationReady/
+// bearishContinuationReady). Cancelling the order the moment body closes
+// past its own frozen TP was wiping out setups that never became invalid -
+// price simply hadn't retraced to entry yet. Only a body close through SL
+// means the directional thesis itself is wrong; that's the only condition
+// that should cancel a still-pending order.
+//
+// The event's own creation bar is skipped (evBar == bar_index) - the body
+// that just formed the BOS/CHoCH necessarily closed beyond one of the
+// PRE-reset structural levels by definition, which would otherwise
+// trip this check on bar one.
+//
+// SAME-BAR ENTRY TAKES PRIORITY: this loop runs before the ENTRY loop
+// below, in the same per-bar pass. A single strong candle can touch the
+// 0.71 entry level with its wick and ALSO close its body past SL - a fast
+// move straight through the whole zone. Without this guard, invalidation
+// would fire first and remove the setup from pendingIdx before the entry
+// loop (later, same bar) ever got to check it - silently discarding a
+// real entry the wick clearly reached, identical in spirit to the earlier
+// "new event invalidates before entry checks" bug this whole mechanism
+// replaced. A real trader would have been filled at 0.71 intrabar before
+// price kept falling, so if this bar's wick already reached entry, that
+// takes priority - skip invalidation and let the ENTRY loop process it
+// normally (it will enter, then resolve via the normal EXIT flow on a
+// later bar).
+//
+// This only decides whether the ORDER gets cancelled while still pending.
+// Once actually entered (openIdx), TP/SL exits remain wick-based and
+// completely unaffected by this - see the EXIT section below.
+// ============================================================================
+if array.size(pendingIdx) > 0
+    float bodyHigh = math.max(open, close)
+    float bodyLow = math.min(open, close)
+    for vi = array.size(pendingIdx) - 1 to 0
+        int vidx = array.get(pendingIdx, vi)
+        if array.get(evBar, vidx) != bar_index
+            string vDir = array.get(evDirection, vidx)
+            float vSl = array.get(evFib1, vidx)
+            float vEntryLvl = array.get(evFib071, vidx)
+            bool vEnteredThisBar = vDir == "BULLISH" ? low <= vEntryLvl : high >= vEntryLvl
+            bool vBroken = vDir == "BULLISH" ? bodyLow < vSl : bodyHigh > vSl
+            if vBroken and not vEnteredThisBar
+                array.set(evStatus, vidx, "INVALIDATED")
+                array.remove(pendingIdx, vi)
+
+bool tradeWonThisBar = false
+bool tradeLostThisBar = false
+bool tradeEnteredThisBar = false
+float lastEnteredPrice = na
+
+// --- EXIT: check every currently ENTERED (open) trade for TP/SL ---
+if array.size(openIdx) > 0
+    for oi = array.size(openIdx) - 1 to 0
+        int oidx = array.get(openIdx, oi)
+        string oDir = array.get(evDirection, oidx)
+        float oTp = array.get(evFib0, oidx)
+        float oSl = array.get(evFib1, oidx)
+        float oEntry = array.get(evEntryPrice, oidx)
+        bool hitTP = oDir == "BULLISH" ? high >= oTp : low <= oTp
+        bool hitSL = oDir == "BULLISH" ? low <= oSl : high >= oSl
+        string exitResult = na
+        float exitPx = na
+        if hitTP and hitSL
+            if sameBarExitMode == "Conservative"
+                exitResult := "CLOSED_LOSS"
+                exitPx := oSl
+            else if sameBarExitMode == "Optimistic"
+                exitResult := "CLOSED_WIN"
+                exitPx := oTp
+            // "Ignore": stays unresolved, checked again next bar
+        else if hitTP
+            exitResult := "CLOSED_WIN"
+            exitPx := oTp
+        else if hitSL
+            exitResult := "CLOSED_LOSS"
+            exitPx := oSl
+        if not na(exitResult)
+            array.set(evStatus, oidx, exitResult)
+            array.set(evExitBar, oidx, bar_index)
+            array.set(evExitTime, oidx, time)
+            array.set(evExitPrice, oidx, exitPx)
+            float riskAmt = oDir == "BULLISH" ? oEntry - oSl : oSl - oEntry
+            float rewardAmt = oDir == "BULLISH" ? oTp - oEntry : oEntry - oTp
+            float rResult = exitResult == "CLOSED_WIN" ? (riskAmt != 0 ? rewardAmt / riskAmt : na) : -1.0
+            array.set(evR, oidx, rResult)
+            array.remove(openIdx, oi)
+            hasOpenTrade := array.size(openIdx) > 0
+            if exitResult == "CLOSED_WIN"
+                tradeWonThisBar := true
+            else
+                tradeLostThisBar := true
+            // Freeze the trade zone boxes/entry line at the exact exit bar.
+            box pBox = array.get(evProfitBox, oidx)
+            box lBox = array.get(evLossBox, oidx)
+            line eLine = array.get(evEntryLine, oidx)
+            if not na(pBox)
+                box.set_right(pBox, bar_index)
+            if not na(lBox)
+                box.set_right(lBox, bar_index)
+            if not na(eLine)
+                line.set_x2(eLine, bar_index)
+            if showTradeExitMarkers
+                label exitLbl = label.new(x=bar_index, y=exitPx, text=(exitResult == "CLOSED_WIN" ? "TP\nWIN" : "SL\nLOSS"), style=exitResult == "CLOSED_WIN" ? label.style_label_down : label.style_label_up, color=exitResult == "CLOSED_WIN" ? color.new(color.green, 0) : color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+                array.set(evExitLabel, oidx, exitLbl)
+
+            // TRADINGVIEW BUILD: the original app version hands each closed
+            // trade off to its own host app here via a `backtest.recordTrade(...)`
+            // call - `backtest` is NOT a real Pine namespace, it's a bridge
+            // that app's custom interpreter provides, and this line would
+            // fail to compile in real TradingView. Removed for this build;
+            // everything else about how a trade closes (TP/SL detection,
+            // R calculation, zone-box freezing just above) is unchanged and
+            // still runs normally - only the hand-off to that other app is
+            // gone.
+
+// --- ENTRY: check every currently ACTIVE_SETUP range for a 0.71 touch.
+// Same-bar entry is explicitly excluded (evBar[idx] == bar_index skip) -
+// the earliest possible entry is the bar AFTER the event bar, per the
+// no-lookahead requirement. ---
+if array.size(pendingIdx) > 0
+    for pi = array.size(pendingIdx) - 1 to 0
+        int pidx = array.get(pendingIdx, pi)
+        if array.get(evBar, pidx) != bar_index
+            string pDir = array.get(evDirection, pidx)
+            float pEntryLvl = array.get(evFib071, pidx)
+            bool entered = pDir == "BULLISH" ? low <= pEntryLvl : high >= pEntryLvl
+            // IMBALANCE FILTER: when enabled, a setup whose range never had
+            // an FVG simply never enters - it stays pending exactly as
+            // before (still shown, still invalidates normally via SL
+            // body-breach), it just never triggers ENTERED.
+            if entered and (not requireImbalanceInRange or array.get(evHasImbalance, pidx))
+                if allowMultipleOpenTrades or not hasOpenTrade
+                    array.set(evStatus, pidx, "ENTERED")
+                    array.set(evEntryPrice, pidx, pEntryLvl)
+                    array.set(evEntryBar, pidx, bar_index)
+                    array.set(evEntryTime, pidx, time)
+                    array.push(openIdx, pidx)
+                    array.remove(pendingIdx, pi)
+                    hasOpenTrade := true
+                    tradeEnteredThisBar := true
+                    lastEnteredPrice := pEntryLvl
+
+                    // Create the trade zones (Part 12/13/18 - profit/loss
+                    // boxes, entry line) at the moment of entry.
+                    float pTp = array.get(evFib0, pidx)
+                    float pSl = array.get(evFib1, pidx)
+                    if showTradeZones
+                        color pColor = pDir == "BULLISH" ? profitZoneColor : lossZoneColor
+                        color lColor = pDir == "BULLISH" ? lossZoneColor : profitZoneColor
+                        float pTopP = pDir == "BULLISH" ? pTp : pEntryLvl
+                        float pBotP = pDir == "BULLISH" ? pEntryLvl : pTp
+                        float lTopP = pDir == "BULLISH" ? pEntryLvl : pSl
+                        float lBotP = pDir == "BULLISH" ? pSl : pEntryLvl
+                        newProfitBox = box.new(left=bar_index, top=pTopP, right=bar_index, bottom=pBotP, border_color=color.new(profitZoneColor, 0), bgcolor=profitZoneColor)
+                        newLossBox = box.new(left=bar_index, top=lTopP, right=bar_index, bottom=lBotP, border_color=color.new(lossZoneColor, 0), bgcolor=lossZoneColor)
+                        array.set(evProfitBox, pidx, newProfitBox)
+                        array.set(evLossBox, pidx, newLossBox)
+                        array.push(vizProfitBoxes, newProfitBox)
+                        array.push(vizLossBoxes, newLossBox)
+                        if array.size(vizProfitBoxes) > maxTradeVisualizations
+                            box.delete(array.shift(vizProfitBoxes))
+                            box.delete(array.shift(vizLossBoxes))
+                    if showTradeEntryLine
+                        newEntryLine = line.new(x1=bar_index, y1=pEntryLvl, x2=bar_index, y2=pEntryLvl, color=entryColor, width=1)
+                        array.set(evEntryLine, pidx, newEntryLine)
+                        if showTradeLabels
+                            newEntryLbl = label.new(x=bar_index, y=pEntryLvl, text="ENTRY", style=label.style_label_right, color=color.new(color.white, 100), textcolor=entryColor, size=size.tiny)
+                            array.set(evEntryLabel, pidx, newEntryLbl)
+                else
+                    skippedByMultiTradeLimit += 1
+
+// --- Extend trade zone boxes/entry line for every still-OPEN trade to the
+// current bar (Part 14/16) - frozen only at actual exit, handled above. ---
+if showTradeZones and array.size(openIdx) > 0
+    for oi2 = 0 to array.size(openIdx) - 1
+        int oidx2 = array.get(openIdx, oi2)
+        box pBox2 = array.get(evProfitBox, oidx2)
+        box lBox2 = array.get(evLossBox, oidx2)
+        line eLine2 = array.get(evEntryLine, oidx2)
+        if not na(pBox2)
+            box.set_right(pBox2, bar_index)
+        if not na(lBox2)
+            box.set_right(lBox2, bar_index)
+        if not na(eLine2)
+            line.set_x2(eLine2, bar_index)
+
+// ============================================================================
+// TRADE MARKERS (entry marker + historical win/loss) - plotshape reads its
+// condition fresh each bar as Pine processes history in sequence.
+// ============================================================================
+plotshape((showTradeExitMarkers and tradeEnteredThisBar) ? lastEnteredPrice : na, style=shape.circle, location=location.absolute, color=entryColor, size=size.tiny, title="Entry Marker")
+plotshape(showTradeExitMarkers and tradeWonThisBar, style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), text="WIN", textcolor=color.white, size=size.tiny, title="Win Marker")
+plotshape(showTradeExitMarkers and tradeLostThisBar, style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), text="LOSS", textcolor=color.white, size=size.tiny, title="Loss Marker")
+
+
+// ============================================================================
+// TRADE FIBONACCI DISPLAY (revised) - fixed HORIZONTAL length only
+// (fibLineLengthBars, default 8). The PRICE range/levels (fib0/fib071/fib1)
+// are completely unaffected by this - they were already frozen at event
+// creation from the full structural range, exactly as before. This section
+// only changes where the line's right edge (x2) is placed for drawing.
+// Bounded to the most recent maxDisplayedTradeFibs events, redrawn fresh on
+// the last bar only. Uses xloc.bar_time so old ranges don't hit Pine's
+// bar-index distance error.
+// ============================================================================
+if showTradeFib and barstate.islast
+    if array.size(tradeFibLines) > 0
+        for i = 0 to array.size(tradeFibLines) - 1
+            line.delete(array.get(tradeFibLines, i))
+    if array.size(tradeFibLabels) > 0
+        for i = 0 to array.size(tradeFibLabels) - 1
+            label.delete(array.get(tradeFibLabels, i))
+    array.clear(tradeFibLines)
+    array.clear(tradeFibLabels)
+
+    int totalEvents = array.size(evBar)
+    int fibStart = math.max(0, totalEvents - maxDisplayedTradeFibs)
+    if totalEvents > 0
+        for i = fibStart to totalEvents - 1
+            string fDir = array.get(evDirection, i)
+            string fStatus = array.get(evStatus, i)
+            bool skipThis = fStatus == "INVALIDATED" and not showInvalidatedRanges
+            if not skipThis
+                float fFib0 = array.get(evFib0, i)
+                float fFib071 = array.get(evFib071, i)
+                float fFib1 = array.get(evFib1, i)
+                int fEventBar = array.get(evBar, i)
+                int fEventTime = array.get(evTime, i)
+                int fRangeStartTime = array.get(evRangeStartTime, i)
+                int fEndBar = fEventBar + fibLineLengthBars
+                // Horizontal end anchored fibLineLengthBars after the EVENT
+                // bar specifically (not the structural range start) - a
+                // fixed, short display window per Part 6/7, independent of
+                // how large the underlying structural range was. Uses the
+                // exact historical timestamp when that bar has already
+                // occurred; falls back to the current (last) bar's time for
+                // very recent events whose window extends past the end of
+                // currently loaded history - this only runs at
+                // barstate.islast, so there is no later bar to "catch up"
+                // on, and capping at the last available bar is the only
+                // sensible behavior in that case.
+                int fEndBarClamped = math.min(fEndBar, bar_index)
+                int fEndBarsBack = bar_index - fEndBarClamped
+                // RE10007 guard: the [] history-reference operator only
+                // accepts an offset up to 5000. With events now much
+                // rarer (BOS Filters tightened), the oldest event among
+                // the most recent maxDisplayedTradeFibs can sit further
+                // back than that - fall back to the event's own already-
+                // stored creation time (no lookback needed) rather than
+                // indexing out of range. That just draws a very short/
+                // zero-width line for a long-past event, which is
+                // functionally irrelevant since it's off-screen anyway.
+                int fEndTime = fEndBarsBack <= 5000 ? time[fEndBarsBack] : fEventTime
+                int fadeAlpha = fStatus == "INVALIDATED" ? 85 : 60
+
+                if showTradeLabels
+                    tpLbl = label.new(x=fEventTime, y=fFib0, text="TP 0", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_right, color=color.new(color.white, 100), textcolor=tpColor, size=size.tiny)
+                    array.push(tradeFibLabels, tpLbl)
+                    enLbl = label.new(x=fEventTime, y=fFib071, text="ENTRY 0.71", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_right, color=color.new(color.white, 100), textcolor=entryColor, size=size.tiny)
+                    array.push(tradeFibLabels, enLbl)
+                    slLbl = label.new(x=fEventTime, y=fFib1, text="SL 1", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_right, color=color.new(color.white, 100), textcolor=slColor, size=size.tiny)
+                    array.push(tradeFibLabels, slLbl)
+
+                tpL = line.new(x1=fRangeStartTime, y1=fFib0, x2=fEndTime, y2=fFib0, xloc=xloc.bar_time, extend=extend.none, color=color.new(tpColor, fadeAlpha), width=1)
+                array.push(tradeFibLines, tpL)
+                enL = line.new(x1=fRangeStartTime, y1=fFib071, x2=fEndTime, y2=fFib071, xloc=xloc.bar_time, extend=extend.none, color=color.new(entryColor, fadeAlpha), width=1)
+                array.push(tradeFibLines, enL)
+                slL = line.new(x1=fRangeStartTime, y1=fFib1, x2=fEndTime, y2=fFib1, xloc=xloc.bar_time, extend=extend.none, color=color.new(slColor, fadeAlpha), width=1)
+                array.push(tradeFibLines, slL)
+
+
+// Affichage de la structure actuelle
+if(isCurrentStructToShow)
+    d.delete_line(structureHighLine, na)
+    d.delete_line(structureLowLine, na)
+
+    structureHighLine := na
+    structureLowLine := na
+
+    // Only display the currently active structural level.
+    // Historical BOS/CHoCH lines are handled separately above.
+    // xloc.bar_time (not bar_index) - the anchor's start bar can now sit
+    // thousands of bars in the past once a trend runs a long time between
+    // accepted events (see the fibo*StartTime declaration above), and
+    // bar_index-based x1 hits Pine's distance limit in that case.
+    if structureDirection == 1
+        // Bearish structure: LOW was broken, HIGH is now active.
+        structureHighLine := line.new(x1=structureHighStartTime, y1=structureHigh, x2=time, y2=structureHigh, xloc=xloc.bar_time, color=currentStructColor, style=currentStructLineStyle, width=currentStructLineWidth)
+
+    else if structureDirection == 2
+        // Bullish structure: HIGH was broken, LOW is now active.
+        structureLowLine := line.new(x1=structureLowStartTime, y1=structureLow, x2=time, y2=structureLow, xloc=xloc.bar_time, color=currentStructColor, style=currentStructLineStyle, width=currentStructLineWidth)
+    // Affichage du Fibonnacci 1 de la structure actuelle
+    if(isFibo1ToShow)
+        d.delete_line(fibo1Line, fibo1Label)
+        fibo1Price := structureDirection == 1 ? structureHigh - (structureRange - structureRange * fibo1Value) : structureLow + (structureRange - structureRange * fibo1Value)
+        fibo1StartIndex := structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex
+        fibo1StartTime := structureDirection == 1 ? structureHighStartTime : structureLowStartTime
+        fibo1Line := line.new(x1=fibo1StartTime, y1=fibo1Price, x2=time, y2=fibo1Price, xloc=xloc.bar_time, color = fibo1Color, style = fibo1Style, width = fibo1LineWidth)
+        fibo1Label := label.new(bar_index + 20, fibo1Price, text = str.tostring(fibo1Value) + "(" + str.tostring(fibo1Price) + ")", style = label.style_none, textcolor = fibo1Color)
+
+    // Affichage du Fibonnacci 2 de la structure actuelle
+    if(isFibo2ToShow)
+        d.delete_line(fibo2Line, fibo2Label)
+        fibo2Price := structureDirection == 1 ? structureHigh - (structureRange - structureRange * fibo2Value) : structureLow + (structureRange - structureRange * fibo2Value)
+        fibo2StartIndex := structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex
+        fibo2StartTime := structureDirection == 1 ? structureHighStartTime : structureLowStartTime
+        fibo2Line := line.new(x1=fibo2StartTime, y1=fibo2Price, x2=time, y2=fibo2Price, xloc=xloc.bar_time, color = fibo2Color, style = fibo2Style, width = fibo2LineWidth)
+        fibo2Label := label.new(bar_index + 20, fibo2Price, text = str.tostring(fibo2Value) + "(" + str.tostring(fibo2Price) + ")", style = label.style_none, textcolor = fibo2Color)
+
+    // Affichage du Fibonnacci 3 de la structure actuelle
+    if(isFibo3ToShow)
+        d.delete_line(fibo3Line, fibo3Label)
+        fibo3Price := structureDirection == 1 ? structureHigh - (structureRange - structureRange * fibo3Value) : structureLow + (structureRange - structureRange * fibo3Value)
+        fibo3StartIndex := structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex
+        fibo3StartTime := structureDirection == 1 ? structureHighStartTime : structureLowStartTime
+        fibo3Line := line.new(x1=fibo3StartTime, y1=fibo3Price, x2=time, y2=fibo3Price, xloc=xloc.bar_time, color = fibo3Color, style = fibo3Style, width = fibo3LineWidth)
+        fibo3Label := label.new(bar_index + 20, fibo3Price, text = str.tostring(fibo3Value) + "(" + str.tostring(fibo3Price) + ")", style = label.style_none, textcolor = fibo3Color)
+
+    // Affichage du Fibonnacci 1 de la structure actuelle
+    if(isFibo4ToShow)
+        d.delete_line(fibo4Line, fibo4Label)
+        fibo4Price := structureDirection == 1 ? structureHigh - (structureRange - structureRange * fibo4Value) : structureLow + (structureRange - structureRange * fibo4Value)
+        fibo4StartIndex := structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex
+        fibo4StartTime := structureDirection == 1 ? structureHighStartTime : structureLowStartTime
+        fibo4Line := line.new(x1=fibo4StartTime, y1=fibo4Price, x2=time, y2=fibo4Price, xloc=xloc.bar_time, color = fibo4Color, style = fibo4Style, width = fibo4LineWidth)
+        fibo4Label := label.new(bar_index + 20, fibo4Price, text = str.tostring(fibo4Value) + "(" + str.tostring(fibo4Price) + ")", style = label.style_none, textcolor = fibo4Color)
+
+    // Affichage du Fibonnacci 1 de la structure actuelle
+    if(isFibo5ToShow)
+        d.delete_line(fibo5Line, fibo5Label)
+        fibo5Price := structureDirection == 1 ? structureHigh - (structureRange - structureRange * fibo5Value) : structureLow + (structureRange - structureRange * fibo5Value)
+        fibo5StartIndex := structureDirection == 1 ? structureHighStartIndex : structureLowStartIndex
+        fibo5StartTime := structureDirection == 1 ? structureHighStartTime : structureLowStartTime
+        fibo5Line := line.new(x1=fibo5StartTime, y1=fibo5Price, x2=time, y2=fibo5Price, xloc=xloc.bar_time, color = fibo5Color, style = fibo5Style, width = fibo5LineWidth)
+        fibo5Label := label.new(bar_index + 20, fibo5Price, text = str.tostring(fibo5Value) + "(" + str.tostring(fibo5Price) + ")", style = label.style_none, textcolor = fibo5Color)
+
+    // 0.71 fib position (entry/SL/TP) - see the input group declaration
+    // and the var declarations above for context. Independent of the
+    // Trade Model further down: draws for the structure currently shown
+    // above regardless of whether it would pass that system's BOS Filters.
+    if isFib071PositionToShow
+        d.delete_line(fib071EntryLine, fib071Label)
+        box.delete(fib071RiskBox)
+        box.delete(fib071RewardBox)
+
+        fib071Entry = structureDirection == 1 ? structureHigh - (structureRange - structureRange * 0.71) : structureLow + (structureRange - structureRange * 0.71)
+        fib071Tp = structureDirection == 1 ? structureLow : structureHigh
+        fib071Sl = structureDirection == 1 ? structureHigh : structureLow
+        fib071AnchorTime = structureDirection == 1 ? structureHighStartTime : structureLowStartTime
+
+        fib071EntryLine := line.new(x1=fib071AnchorTime, y1=fib071Entry, x2=time, y2=fib071Entry, xloc=xloc.bar_time, color=color.aqua, style=line.style_dashed, width=1)
+        fib071RiskBox := box.new(left=fib071AnchorTime, top=math.max(fib071Entry, fib071Sl), right=time, bottom=math.min(fib071Entry, fib071Sl), xloc=xloc.bar_time, bgcolor=fib071RiskColor, border_color=color.new(color.red, 60))
+        fib071RewardBox := box.new(left=fib071AnchorTime, top=math.max(fib071Entry, fib071Tp), right=time, bottom=math.min(fib071Entry, fib071Tp), xloc=xloc.bar_time, bgcolor=fib071RewardColor, border_color=color.new(color.green, 60))
+        fib071RrRaw = fib071Sl == fib071Entry ? 0.0 : math.abs(fib071Tp - fib071Entry) / math.abs(fib071Entry - fib071Sl)
+        fib071Rr = math.round(fib071RrRaw, 2)
+        fib071Label := label.new(bar_index + 20, fib071Entry, text = "Entry 0.71 | " + str.tostring(fib071Rr) + "R", style = label.style_none, textcolor = color.aqua)
+
+//isBOSAlert = (structureDirection == 1 and ((isStructBodyCandleBreak and close < structureLow) or (not(isStructBodyCandleBreak) and low < structureLow))) or (structureDirection == 2 and ((isStructBodyCandleBreak and close > structureHigh) or (not(isStructBodyCandleBreak) and high > structureHigh)))
+//isCHOCHAlert = (structureDirection == 1 and ((isStructBodyCandleBreak and close > structureHigh) or (not(isStructBodyCandleBreak) and high > structureHigh))) or (structureDirection == 2 and ((isStructBodyCandleBreak and close < structureLow) or (not(isStructBodyCandleBreak) and low < structureLow)))
+alertcondition(condition = isBOSAlert , title = "BOS", message = "BOS")
+alertcondition(condition = isCHOCHAlert , title = "CHOCH",message = "CHOCH")
+var table debugTable = table.new(position.top_right, 2, 12, border_width = 1)
+
+if barstate.islast and showDebugTables
+    table.cell(debugTable, 0, 0, "DEBUG", bgcolor=color.gray, text_color=color.white)
+    table.cell(debugTable, 1, 0, "VALUE", bgcolor=color.gray, text_color=color.white)
+
+    table.cell(debugTable, 0, 1, "Direction")
+    table.cell(debugTable, 1, 1, structureDirection == 1 ? "BEARISH" : structureDirection == 2 ? "BULLISH" : "NONE")
+
+    table.cell(debugTable, 0, 2, "Continuation Range")
+    table.cell(debugTable, 1, 2, str.tostring(continuationRange))
+
+    table.cell(debugTable, 0, 3, "Min Retracement")
+    table.cell(debugTable, 1, 3, str.tostring(continuationRange * minSwingPercent / 100))
+
+    table.cell(debugTable, 0, 4, "Bullish Ready")
+    table.cell(debugTable, 1, 4, str.tostring(bullishContinuationReady))
+
+    table.cell(debugTable, 0, 5, "Bearish Ready")
+    table.cell(debugTable, 1, 5, str.tostring(bearishContinuationReady))
+
+    // CHoCH REWRITE: accepted-event counters
+    table.cell(debugTable, 0, 6, "Bullish BOS")
+    table.cell(debugTable, 1, 6, str.tostring(bullishBosCount))
+
+    table.cell(debugTable, 0, 7, "Bearish BOS")
+    table.cell(debugTable, 1, 7, str.tostring(bearishBosCount))
+
+    table.cell(debugTable, 0, 8, "Bullish CHoCH")
+    table.cell(debugTable, 1, 8, str.tostring(bullishChochCount))
+
+    table.cell(debugTable, 0, 9, "Bearish CHoCH")
+    table.cell(debugTable, 1, 9, str.tostring(bearishChochCount))
+
+    table.cell(debugTable, 0, 10, "Total BOS")
+    table.cell(debugTable, 1, 10, str.tostring(bullishBosCount + bearishBosCount))
+
+    table.cell(debugTable, 0, 11, "Total CHoCH")
+    table.cell(debugTable, 1, 11, str.tostring(bullishChochCount + bearishChochCount))
+if barstate.islast and not showDebugTables
+    table.clear(debugTable, 0, 0, 1, 11)
+// ============================================================================
+// BOS FILTER DEBUG TABLE (new) - separate table, only shown when
+// showBosFilterDebug is true. Does not touch the original debugTable above.
+// ============================================================================
+if showBosFilterDebug and showDebugTables and barstate.islast
+    string enabledFiltersStr = ""
+    if enableMinSameDirectionBars
+        enabledFiltersStr := enabledFiltersStr + "MinBars "
+    if enableMinRetracement
+        enabledFiltersStr := enabledFiltersStr + "Retrace "
+    if enableMinSwingPercent
+        enabledFiltersStr := enabledFiltersStr + "Swing% "
+    if enableMinSwingPips
+        enabledFiltersStr := enabledFiltersStr + "SwingPips "
+    if enableMinBosDistance
+        enabledFiltersStr := enabledFiltersStr + "BosDist "
+    if enableAtrFilter
+        enabledFiltersStr := enabledFiltersStr + "ATR "
+    if enabledFiltersStr == ""
+        enabledFiltersStr := "NONE (passthrough)"
+
+    int barsSinceLastBos = structureDirection == 1 ? (na(lastBearishBosBar) ? na : bar_index - lastBearishBosBar) : (na(lastBullishBosBar) ? na : bar_index - lastBullishBosBar)
+    float lastBosPrice = structureDirection == 1 ? lastBearishBosLevel : lastBullishBosLevel
+    float retraceProgress = structureDirection == 2 and not na(filter2BullishFrozenHigh) and filter2BullishFrozenRange > 0 ? math.max(0, math.min(100, (filter2BullishFrozenHigh - math.min(open,close)) / filter2BullishFrozenRange * 100)) : structureDirection == 1 and not na(filter2BearishFrozenLow) and filter2BearishFrozenRange > 0 ? math.max(0, math.min(100, (math.max(open,close) - filter2BearishFrozenLow) / filter2BearishFrozenRange * 100)) : na
+
+    var table filterDebugTable = table.new(position.bottom_right, 2, 20, bgcolor=color.new(color.white, 15), border_width=1, border_color=color.gray)
+    table.cell(filterDebugTable, 0, 0, "-- BOS FILTER DEBUG --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(filterDebugTable, 1, 0, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(filterDebugTable, 0, 1, "Current Direction", text_color=color.black)
+    table.cell(filterDebugTable, 1, 1, structureDirection == 1 ? "BEARISH" : structureDirection == 2 ? "BULLISH" : "NONE", text_color=color.black)
+    table.cell(filterDebugTable, 0, 2, "Last BOS Direction", text_color=color.black)
+    table.cell(filterDebugTable, 1, 2, structureDirection == 1 ? "BEARISH" : "BULLISH", text_color=color.black)
+    table.cell(filterDebugTable, 0, 3, "Last BOS Bar", text_color=color.black)
+    table.cell(filterDebugTable, 1, 3, structureDirection == 1 ? (na(lastBearishBosBar) ? "na" : str.tostring(lastBearishBosBar)) : (na(lastBullishBosBar) ? "na" : str.tostring(lastBullishBosBar)), text_color=color.black)
+    table.cell(filterDebugTable, 0, 4, "Bars Since Last BOS", text_color=color.black)
+    table.cell(filterDebugTable, 1, 4, na(barsSinceLastBos) ? "na" : str.tostring(barsSinceLastBos), text_color=color.black)
+    table.cell(filterDebugTable, 0, 5, "Last BOS Price", text_color=color.black)
+    table.cell(filterDebugTable, 1, 5, na(lastBosPrice) ? "na" : str.tostring(lastBosPrice), text_color=color.black)
+    table.cell(filterDebugTable, 0, 6, "Current Structure Range", text_color=color.black)
+    table.cell(filterDebugTable, 1, 6, str.tostring(structureRange), text_color=color.black)
+    table.cell(filterDebugTable, 0, 7, "Retracement Progress %", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(filterDebugTable, 1, 7, na(retraceProgress) ? "na" : str.tostring(math.round(retraceProgress)) + "%", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(filterDebugTable, 0, 8, "Minimum Retracement %", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(filterDebugTable, 1, 8, str.tostring(minRetracementPercent) + "%", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(filterDebugTable, 0, 9, "Same-Direction Bars Requirement", text_color=color.black)
+    table.cell(filterDebugTable, 1, 9, str.tostring(minSameDirectionBars), text_color=color.black)
+    table.cell(filterDebugTable, 0, 10, "Current Same-Direction Bars", text_color=color.black)
+    table.cell(filterDebugTable, 1, 10, na(barsSinceLastBos) ? "na" : str.tostring(barsSinceLastBos), text_color=color.black)
+    table.cell(filterDebugTable, 0, 11, "Enabled Filters", text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(filterDebugTable, 1, 11, enabledFiltersStr, text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(filterDebugTable, 0, 12, "Last Filter Decision", text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(filterDebugTable, 1, 12, lastFilterDecision + (lastFilterDecision == "REJECTED" ? " (" + lastFilterReason + ")" : ""), text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(filterDebugTable, 0, 13, "Raw BOS Candidates", text_color=color.black, bgcolor=color.new(color.orange, 80))
+    table.cell(filterDebugTable, 1, 13, str.tostring(rawBosCandidateCount), text_color=color.black, bgcolor=color.new(color.orange, 80))
+    table.cell(filterDebugTable, 0, 14, "Accepted BOS", text_color=color.black, bgcolor=color.new(color.green, 80))
+    table.cell(filterDebugTable, 1, 14, str.tostring(filterAcceptedCount), text_color=color.black, bgcolor=color.new(color.green, 80))
+    table.cell(filterDebugTable, 0, 15, "Rejected: Min Bars", text_color=color.black)
+    table.cell(filterDebugTable, 1, 15, str.tostring(rejectedByMinBars), text_color=color.black)
+    table.cell(filterDebugTable, 0, 16, "Rejected: Retracement", text_color=color.black)
+    table.cell(filterDebugTable, 1, 16, str.tostring(rejectedByRetracement), text_color=color.black)
+    table.cell(filterDebugTable, 0, 17, "Rejected: Swing % / Pips", text_color=color.black)
+    table.cell(filterDebugTable, 1, 17, str.tostring(rejectedBySwingPct) + " / " + str.tostring(rejectedBySwingPips), text_color=color.black)
+    table.cell(filterDebugTable, 0, 18, "Rejected: BOS Distance", text_color=color.black)
+    table.cell(filterDebugTable, 1, 18, str.tostring(rejectedByBosDistance), text_color=color.black)
+    table.cell(filterDebugTable, 0, 19, "Rejected: ATR", text_color=color.black)
+    table.cell(filterDebugTable, 1, 19, str.tostring(rejectedByAtr), text_color=color.black)
+
+// ============================================================================
+// TRADE STATISTICS (revised) - computed once at barstate.islast, one full
+// pass through the event arrays. A setup that never reached 0.71 is NOT a
+// loss - it is INVALIDATED (or still ACTIVE_SETUP if history simply ended
+// before the next event) and excluded from win/loss/R entirely, counted
+// only in the setup-level tallies.
+// ============================================================================
+showTradeStatsTable = input.bool(true, "Show Trade Statistics Table", group="Debug")
+var table tradeStatsTable = table.new(position.bottom_left, 2, 82, bgcolor=color.new(color.white, 15), border_width=1, border_color=color.gray)
+if barstate.islast and showTradeStatsTable
+    int totalSetups = array.size(evBar)
+    int activeSetups = 0
+    int invalidatedSetups = 0
+    int enteredSetups = 0
+    int openTrades = 0
+    int closedTrades = 0
+    int wins = 0
+    int losses = 0
+    float sumR = 0.0
+    float sumWinR = 0.0
+    float sumLossR = 0.0
+
+    int bosSetups = 0
+    int chochSetups = 0
+    int bosEntries = 0
+    int chochEntries = 0
+    int bosOpen = 0
+    int chochOpen = 0
+    int bosWins = 0
+    int bosLosses = 0
+    int chochWins = 0
+    int chochLosses = 0
+    float bosSumR = 0.0
+    float chochSumR = 0.0
+
+    int bullBosSetups = 0
+    int bearBosSetups = 0
+    int bullChochSetups = 0
+    int bearChochSetups = 0
+    int bullBosEntries = 0
+    int bearBosEntries = 0
+    int bullChochEntries = 0
+    int bearChochEntries = 0
+    int bullBosWins = 0
+    int bearBosWins = 0
+    int bullChochWins = 0
+    int bearChochWins = 0
+    int bullBosLosses = 0
+    int bearBosLosses = 0
+    int bullChochLosses = 0
+    int bearChochLosses = 0
+    float bullBosSumR = 0.0
+    float bearBosSumR = 0.0
+    float bullChochSumR = 0.0
+    float bearChochSumR = 0.0
+
+    if totalSetups > 0
+        for i = 0 to totalSetups - 1
+            string sType = array.get(evType, i)
+            string sDir = array.get(evDirection, i)
+            string sStatus = array.get(evStatus, i)
+            bool isBos = sType == "BOS"
+            bool isBull = sDir == "BULLISH"
+
+            if isBos
+                bosSetups += 1
+                if isBull
+                    bullBosSetups += 1
+                else
+                    bearBosSetups += 1
+            else
+                chochSetups += 1
+                if isBull
+                    bullChochSetups += 1
+                else
+                    bearChochSetups += 1
+
+            if sStatus == "ACTIVE_SETUP"
+                activeSetups += 1
+            else if sStatus == "INVALIDATED"
+                invalidatedSetups += 1
+            else
+                enteredSetups += 1
+                if isBos
+                    bosEntries += 1
+                    if isBull
+                        bullBosEntries += 1
+                    else
+                        bearBosEntries += 1
+                else
+                    chochEntries += 1
+                    if isBull
+                        bullChochEntries += 1
+                    else
+                        bearChochEntries += 1
+
+                if sStatus == "ENTERED"
+                    openTrades += 1
+                    if isBos
+                        bosOpen += 1
+                    else
+                        chochOpen += 1
+                else if sStatus == "CLOSED_WIN"
+                    closedTrades += 1
+                    wins += 1
+                    float rWin = array.get(evR, i)
+                    sumR += rWin
+                    sumWinR += rWin
+                    if isBos
+                        bosWins += 1
+                        bosSumR += rWin
+                    else
+                        chochWins += 1
+                        chochSumR += rWin
+                    if isBull
+                        if isBos
+                            bullBosWins += 1
+                            bullBosSumR += rWin
+                        else
+                            bullChochWins += 1
+                            bullChochSumR += rWin
+                    else
+                        if isBos
+                            bearBosWins += 1
+                            bearBosSumR += rWin
+                        else
+                            bearChochWins += 1
+                            bearChochSumR += rWin
+                else if sStatus == "CLOSED_LOSS"
+                    closedTrades += 1
+                    losses += 1
+                    float rLoss = array.get(evR, i)
+                    sumR += rLoss
+                    sumLossR += rLoss
+                    if isBos
+                        bosLosses += 1
+                        bosSumR += rLoss
+                    else
+                        chochLosses += 1
+                        chochSumR += rLoss
+                    if isBull
+                        if isBos
+                            bullBosLosses += 1
+                            bullBosSumR += rLoss
+                        else
+                            bullChochLosses += 1
+                            bullChochSumR += rLoss
+                    else
+                        if isBos
+                            bearBosLosses += 1
+                            bearBosSumR += rLoss
+                        else
+                            bearChochLosses += 1
+                            bearChochSumR += rLoss
+
+    float winRate = closedTrades > 0 ? wins / float(closedTrades) * 100 : na
+    float avgR = closedTrades > 0 ? sumR / closedTrades : na
+    float profitFactor = sumLossR < 0 ? sumWinR / math.abs(sumLossR) : na
+    int bosClosed = bosWins + bosLosses
+    float bosWinRate = bosClosed > 0 ? bosWins / float(bosClosed) * 100 : na
+    float bosAvgR = bosClosed > 0 ? bosSumR / bosClosed : na
+    int chochClosed = chochWins + chochLosses
+    float chochWinRate = chochClosed > 0 ? chochWins / float(chochClosed) * 100 : na
+    float chochAvgR = chochClosed > 0 ? chochSumR / chochClosed : na
+
+    // Current setup (Part 36) - the most recently created event, if any
+    string curType = totalSetups > 0 ? array.get(evType, totalSetups - 1) : "N/A"
+    string curDir = totalSetups > 0 ? array.get(evDirection, totalSetups - 1) : "N/A"
+    string curStatus = totalSetups > 0 ? array.get(evStatus, totalSetups - 1) : "N/A"
+    float curFib0V = totalSetups > 0 ? array.get(evFib0, totalSetups - 1) : na
+    float curFib071V = totalSetups > 0 ? array.get(evFib071, totalSetups - 1) : na
+    float curFib1V = totalSetups > 0 ? array.get(evFib1, totalSetups - 1) : na
+    float curEntryV = totalSetups > 0 ? array.get(evEntryPrice, totalSetups - 1) : na
+    string curDirLabel = curDir == "BULLISH" ? "LONG" : curDir == "BEARISH" ? "SHORT" : "N/A"
+    string curTradeLabel = curStatus == "ENTERED" ? "OPEN" : curStatus == "CLOSED_WIN" ? "WIN" : curStatus == "CLOSED_LOSS" ? "LOSS" : "NONE"
+    
+    
+    table.cell(tradeStatsTable, 0, 0, "-- SETUP STATISTICS --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 1, 0, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 0, 1, "Total Setups", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 1, str.tostring(totalSetups), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 2, "Active Setups", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 2, str.tostring(activeSetups), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 3, "Invalidated Setups", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 3, str.tostring(invalidatedSetups), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 4, "Entered Setups", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 4, str.tostring(enteredSetups), text_color=color.black)
+
+    table.cell(tradeStatsTable, 0, 5, "-- TRADE STATISTICS --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 1, 5, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 0, 6, "Open Trades", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 6, str.tostring(openTrades), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 7, "Closed Trades", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 7, str.tostring(closedTrades), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 8, "Wins", text_color=color.black, bgcolor=color.new(color.green, 85))
+    table.cell(tradeStatsTable, 1, 8, str.tostring(wins), text_color=color.black, bgcolor=color.new(color.green, 85))
+    table.cell(tradeStatsTable, 0, 9, "Losses", text_color=color.black, bgcolor=color.new(color.red, 85))
+    table.cell(tradeStatsTable, 1, 9, str.tostring(losses), text_color=color.black, bgcolor=color.new(color.red, 85))
+    table.cell(tradeStatsTable, 0, 10, "Win Rate", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 10, na(winRate) ? "N/A" : str.tostring(math.round(winRate, 1)) + "%", text_color=color.black)
+    table.cell(tradeStatsTable, 0, 11, "Average R", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 11, na(avgR) ? "N/A" : str.tostring(math.round(avgR, 2)), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 12, "Total R", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 12, str.tostring(math.round(sumR, 2)), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 13, "Profit Factor", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 13, na(profitFactor) ? "N/A" : str.tostring(math.round(profitFactor, 2)), text_color=color.black)
+
+    table.cell(tradeStatsTable, 0, 14, "-- BOS STATISTICS --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 1, 14, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 0, 15, "BOS Setups", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 15, str.tostring(bosSetups), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 16, "BOS Entries", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 16, str.tostring(bosEntries), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 17, "BOS Open Trades", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 17, str.tostring(bosOpen), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 18, "BOS Wins", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 18, str.tostring(bosWins), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 19, "BOS Losses", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 19, str.tostring(bosLosses), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 20, "BOS Win Rate", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 20, na(bosWinRate) ? "N/A" : str.tostring(math.round(bosWinRate, 1)) + "%", text_color=color.black)
+    table.cell(tradeStatsTable, 0, 21, "BOS Average R", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 21, na(bosAvgR) ? "N/A" : str.tostring(math.round(bosAvgR, 2)), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 22, "BOS Total R", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 22, str.tostring(math.round(bosSumR, 2)), text_color=color.black)
+
+    table.cell(tradeStatsTable, 0, 23, "-- CHOCH STATISTICS --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 1, 23, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 0, 24, "CHoCH Setups", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 24, str.tostring(chochSetups), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 25, "CHoCH Entries", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 25, str.tostring(chochEntries), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 26, "CHoCH Open Trades", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 26, str.tostring(chochOpen), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 27, "CHoCH Wins", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 27, str.tostring(chochWins), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 28, "CHoCH Losses", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 28, str.tostring(chochLosses), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 29, "CHoCH Win Rate", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 29, na(chochWinRate) ? "N/A" : str.tostring(math.round(chochWinRate, 1)) + "%", text_color=color.black)
+    table.cell(tradeStatsTable, 0, 30, "CHoCH Average R", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 30, na(chochAvgR) ? "N/A" : str.tostring(math.round(chochAvgR, 2)), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 31, "CHoCH Total R", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 31, str.tostring(math.round(chochSumR, 2)), text_color=color.black)
+
+    table.cell(tradeStatsTable, 0, 32, "-- DIRECTION STATISTICS --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 1, 32, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 0, 33, "Bullish BOS (Setups/Entries)", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 33, str.tostring(bullBosSetups) + " / " + str.tostring(bullBosEntries), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 34, "Bullish BOS (Wins/Losses)", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 34, str.tostring(bullBosWins) + " / " + str.tostring(bullBosLosses), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 35, "Bullish BOS Total R", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 35, str.tostring(math.round(bullBosSumR, 2)), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 36, "Bearish BOS (Setups/Entries)", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 36, str.tostring(bearBosSetups) + " / " + str.tostring(bearBosEntries), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 37, "Bearish BOS (Wins/Losses)", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 37, str.tostring(bearBosWins) + " / " + str.tostring(bearBosLosses), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 38, "Bearish BOS Total R", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 38, str.tostring(math.round(bearBosSumR, 2)), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 39, "Bullish CHoCH (Setups/Entries)", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 39, str.tostring(bullChochSetups) + " / " + str.tostring(bullChochEntries), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 40, "Bullish CHoCH (Wins/Losses)", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 40, str.tostring(bullChochWins) + " / " + str.tostring(bullChochLosses), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 41, "Bullish CHoCH Total R", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 41, str.tostring(math.round(bullChochSumR, 2)), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 42, "Bearish CHoCH (Setups/Entries)", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 42, str.tostring(bearChochSetups) + " / " + str.tostring(bearChochEntries), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 43, "Bearish CHoCH (Wins/Losses)", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 43, str.tostring(bearChochWins) + " / " + str.tostring(bearChochLosses), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 44, "Bearish CHoCH Total R", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 44, str.tostring(math.round(bearChochSumR, 2)), text_color=color.black)
+
+    table.cell(tradeStatsTable, 0, 45, "-- CURRENT SETUP --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 1, 45, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 0, 46, "Event", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(tradeStatsTable, 1, 46, curType, text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(tradeStatsTable, 0, 47, "Direction", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(tradeStatsTable, 1, 47, curDirLabel, text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(tradeStatsTable, 0, 48, "State", text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(tradeStatsTable, 1, 48, curStatus, text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(tradeStatsTable, 0, 49, "Fib 0", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 49, na(curFib0V) ? "N/A" : str.tostring(curFib0V), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 50, "Fib 0.71", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 50, na(curFib071V) ? "N/A" : str.tostring(curFib071V), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 51, "Fib 1", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 51, na(curFib1V) ? "N/A" : str.tostring(curFib1V), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 52, "Entry", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 52, na(curEntryV) ? "WAITING" : str.tostring(curEntryV), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 53, "SL", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 53, na(curFib1V) ? "N/A" : str.tostring(curFib1V), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 54, "TP", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 54, na(curFib0V) ? "N/A" : str.tostring(curFib0V), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 55, "Trade", text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(tradeStatsTable, 1, 55, curTradeLabel, text_color=color.black, bgcolor=color.new(color.yellow, 80))
+
+    table.cell(tradeStatsTable, 0, 56, "-- OTHER --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 1, 56, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 0, 57, "Currently Open Count", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 57, str.tostring(array.size(openIdx)), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 58, "Currently Active Setup Count", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 58, str.tostring(array.size(pendingIdx)), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 59, "Skipped (multi-trade limit)", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 59, str.tostring(skippedByMultiTradeLimit), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 60, "Allow Multiple Open / Same-Bar Exit", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 60, str.tostring(allowMultipleOpenTrades) + " / " + sameBarExitMode, text_color=color.black)
+    table.cell(tradeStatsTable, 0, 61, "Stored Events / Max", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 61, str.tostring(totalSetups) + " / " + str.tostring(maxStoredTradeEvents), text_color=color.black)
+
+    table.cell(tradeStatsTable, 0, 62, "-- FIB ANCHOR VERIFICATION (most recent event) --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 1, 62, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 0, 63, "fibStructuralHigh / Bar", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(tradeStatsTable, 1, 63, (na(fibStructuralHigh) ? "N/A" : str.tostring(fibStructuralHigh)) + " / " + (na(fibStructuralHighBar) ? "N/A" : str.tostring(fibStructuralHighBar)), text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(tradeStatsTable, 0, 64, "fibStructuralLow / Bar", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(tradeStatsTable, 1, 64, (na(fibStructuralLow) ? "N/A" : str.tostring(fibStructuralLow)) + " / " + (na(fibStructuralLowBar) ? "N/A" : str.tostring(fibStructuralLowBar)), text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(tradeStatsTable, 0, 65, "Event candle Close", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 65, na(lastEventBarClose) ? "N/A" : str.tostring(lastEventBarClose), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 66, "Event candle High", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 66, na(lastEventBarHigh) ? "N/A" : str.tostring(lastEventBarHigh), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 67, "Event candle Low", text_color=color.black)
+    table.cell(tradeStatsTable, 1, 67, na(lastEventBarLow) ? "N/A" : str.tostring(lastEventBarLow), text_color=color.black)
+    table.cell(tradeStatsTable, 0, 68, "Anchors match candle price?", text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(tradeStatsTable, 1, 68, (fibStructuralHigh == lastEventBarClose or fibStructuralHigh == lastEventBarHigh or fibStructuralLow == lastEventBarClose or fibStructuralLow == lastEventBarLow) ? "YES - investigate further" : "NO - anchors differ from candle", text_color=color.black, bgcolor=color.new(color.yellow, 80))
+
+    table.cell(tradeStatsTable, 0, 69, "-- FIB LEG TRACKER (live) --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 1, 69, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 0, 70, "Tracking direction", text_color=color.black)
+    
+    table.cell(tradeStatsTable, 0, 71, "Retracement started (frozen)?", text_color=color.black, bgcolor=color.new(color.orange, 80))
+    
+    // ONE-SOURCE-OF-TRUTH VALIDATION (Section 21/22 of the request) - Main
+    // Fib (structureHigh/structureLow, captured directly at the moment the
+    // most recent event was created, before any trade-model code ran) vs.
+    // Trade Fib (the values actually stored with that event, retrieved
+    // from the array). With the overwrite mechanism removed, these are now
+    // written from literally the same read - so the difference should
+    // always be exactly 0. If it's ever not 0, that's a real regression,
+    // not a rounding artifact - no rounding is applied here specifically
+    // so a genuine divergence can't hide behind display rounding.
+    table.cell(tradeStatsTable, 0, 74, "-- ONE SOURCE OF TRUTH VALIDATION --", text_color=color.white, bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 1, 74, "", bgcolor=color.new(#1f3a5f, 0))
+    table.cell(tradeStatsTable, 0, 75, "Main Fib High / Trade Fib High", text_color=color.black)
+    table.cell(tradeStatsTable, 0, 76, "Fib High Difference", text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(tradeStatsTable, 0, 77, "Main Fib Low / Trade Fib Low", text_color=color.black)
+    table.cell(tradeStatsTable, 0, 78, "Fib Low Difference", text_color=color.black, bgcolor=color.new(color.yellow, 80))
+    table.cell(tradeStatsTable, 0, 79, "setupFib0 / setupFib071 / setupFib1", text_color=color.black, bgcolor=color.new(color.aqua, 80))
+    table.cell(tradeStatsTable, 0, 80, "setupFibDirection", text_color=color.black)
+    table.cell(tradeStatsTable, 0, 81, "Entry uses setupFib071 directly?", text_color=color.black, bgcolor=color.new(color.green, 80))
+    table.cell(tradeStatsTable, 1, 81, "YES - entry engine reads evFib071 only, no independent calculation", text_color=color.black, bgcolor=color.new(color.green, 80))
+if barstate.islast and not showTradeStatsTable
+    table.clear(tradeStatsTable, 0, 0, 1, 81)
+plot(na)
