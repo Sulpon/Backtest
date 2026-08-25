@@ -134,4 +134,50 @@ describe("ApiDataLayer request deduplication", () => {
     const [url] = fetchMock.mock.calls[0];
     expect(String(url)).toContain("limit=3000");
   });
+
+  it("getProviderStatus: returns the backend's configured/provider status as-is", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ provider: "oanda", configured: true, error: null }));
+    const layer = new ApiDataLayer("http://api.test");
+
+    const status = await layer.getProviderStatus();
+
+    expect(status).toEqual({ provider: "oanda", configured: true, error: null });
+    expect(String(fetchMock.mock.calls[0][0])).toBe("http://api.test/api/marketdata/status");
+  });
+
+  it("getProviderCandles: requests symbol/timeframe/start/end and returns the bars", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        symbol: "EURUSD",
+        timeframe: "1m",
+        provider: "oanda",
+        bars: [{ time: 0, open: 1.1, high: 1.12, low: 1.09, close: 1.11 }],
+      })
+    );
+    const layer = new ApiDataLayer("http://api.test");
+
+    const result = await layer.getProviderCandles("EURUSD", "1m", 0, 600);
+
+    expect(result.bars).toHaveLength(1);
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("/api/marketdata/candles");
+    expect(url).toContain("symbol=EURUSD");
+    expect(url).toContain("timeframe=1m");
+    expect(url).toContain("start=0");
+    expect(url).toContain("end=600");
+  });
+
+  it("getProviderCandles: surfaces the backend's error detail (e.g. provider not configured) rather than a generic message", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ detail: "OANDA_API_KEY and OANDA_ACCOUNT_ID must be set" }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    const layer = new ApiDataLayer("http://api.test");
+
+    await expect(layer.getProviderCandles("EURUSD", "1m", 0, 600)).rejects.toThrow(
+      "OANDA_API_KEY and OANDA_ACCOUNT_ID must be set"
+    );
+  });
 });

@@ -22,3 +22,17 @@
 .statusbar-hint {
   color: var(--highlight);
 }
+
+.statusbar-provider {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.statusbar-provider:disabled {
+  cursor: default;
+  color: var(--text-faint);
+}

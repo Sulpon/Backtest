@@ -6,6 +6,30 @@ export interface Quote {
   prev: number | null;
 }
 
+/** One provider-synced OHLC bar from /api/marketdata/candles - deliberately
+ * a smaller shape than SymbolTimeframeData's `bars` + events: the provider
+ * layer computes no SMC structure, only candles. */
+export interface ProviderCandleBar {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+export interface ProviderCandles {
+  symbol: string;
+  timeframe: string;
+  provider: string;
+  bars: ProviderCandleBar[];
+}
+
+export interface ProviderStatus {
+  provider: string;
+  configured: boolean;
+  error: string | null;
+}
+
 /**
  * The only way any UI component is allowed to reach candle/structure data.
  * Two implementations exist behind this one interface - no component that
@@ -38,6 +62,16 @@ export interface DataLayer {
    * SMC event history per symbol, which a watchlist row (two numbers) never
    * needs. */
   getQuotes(timeframe: Timeframe): Promise<Quote[]>;
+  /** Roadmap Phase 2: is a live market-data provider (OANDA/FXCM) configured
+   * on the backend right now? Never throws - a missing/misconfigured
+   * provider is a normal, expected state (`configured: false` + `error`),
+   * not a failure of this call itself. */
+  getProviderStatus(): Promise<ProviderStatus>;
+  /** Roadmap Phase 2: provider-synced OHLC candles for [start, end) unix
+   * seconds, via the backend's /api/marketdata/candles - entirely separate
+   * from getSymbolData()'s static, build_db.py-derived dataset. Never
+   * cached: a manual, explicit sync action, not a background prefetch. */
+  getProviderCandles(symbol: string, timeframe: string, start: number, end: number): Promise<ProviderCandles>;
 }
 
 /** Milestone 1's implementation: fetches the pre-generated static JSON files
@@ -106,6 +140,18 @@ export class StaticJsonDataLayer implements DataLayer {
       this.quotesCache.set(timeframe, pending);
     }
     return pending;
+  }
+
+  // Static/offline mode has no provider layer at all (no backend to talk
+  // to) - fails loudly with a clear message rather than silently returning
+  // a fake "not configured" status, same reasoning as getSymbolData's
+  // unreachable() message elsewhere in this file.
+  getProviderStatus(): Promise<ProviderStatus> {
+    return Promise.reject(new Error("Market-data provider sync is not available in static/offline mode"));
+  }
+
+  getProviderCandles(): Promise<ProviderCandles> {
+    return Promise.reject(new Error("Market-data provider sync is not available in static/offline mode"));
   }
 }
 
@@ -202,6 +248,40 @@ export class ApiDataLayer implements DataLayer {
       throw this.unreachable();
     }
     if (!res.ok) throw this.unreachable(res.status);
+    return res.json();
+  }
+
+  // Not cached - see the interface doc comment on getProviderStatus.
+  async getProviderStatus(): Promise<ProviderStatus> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/api/marketdata/status`);
+    } catch {
+      throw this.unreachable();
+    }
+    if (!res.ok) throw this.unreachable(res.status);
+    return res.json();
+  }
+
+  // Not cached - see the interface doc comment on getProviderCandles. A
+  // non-2xx here (503 not-configured, 502 provider failure, 404/400 bad
+  // symbol/timeframe/range) carries a real `detail` message from the
+  // backend worth surfacing verbatim, unlike the generic unreachable()
+  // used when the backend itself can't be reached at all.
+  async getProviderCandles(symbol: string, timeframe: string, start: number, end: number): Promise<ProviderCandles> {
+    const url =
+      `${this.baseUrl}/api/marketdata/candles?symbol=${encodeURIComponent(symbol)}` +
+      `&timeframe=${encodeURIComponent(timeframe)}&start=${start}&end=${end}`;
+    let res: Response;
+    try {
+      res = await fetch(url);
+    } catch {
+      throw this.unreachable();
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(body?.detail ?? `Market-data provider request failed (HTTP ${res.status})`);
+    }
     return res.json();
   }
 }

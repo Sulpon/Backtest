@@ -462,3 +462,91 @@ def post_telegram_send_trade(trade: TradeReviewRequest):
     payload = trade.model_dump(exclude={"snapshotDataUrl"})
     result = TelegramService().send_trade_review(payload, image_bytes=image_bytes)
     return {"ok": result.ok, "error": result.error}
+
+
+# ============================================================================
+# MARKET DATA PROVIDER SYNC - Roadmap Phase 2. Additive-only: a separate
+# route namespace over the existing, previously-disconnected
+# app/marketdata/* provider layer (OANDA/FXCM, incremental sync via
+# MarketDataService). Reads/writes only market_candles/instruments/
+# data_sync_jobs (see marketdata/repository.py) - never the `candles`/
+# `symbols` tables build_db.py produces, and never merged into
+# /api/dataset's response. See docs/ARCHITECTURE.md's market-data
+# source-of-truth rule for the explicit decision this implements: provider
+# data is a separate, additive dataset, not a silent replacement.
+# ============================================================================
+from .marketdata.config import MarketDataConfigError, get_provider, get_provider_name  # noqa: E402
+from .marketdata.service import MarketDataService  # noqa: E402
+from .marketdata.symbols import SUPPORTED_SYMBOLS  # noqa: E402
+from .marketdata.timeframes import is_valid_timeframe  # noqa: E402
+
+
+class MarketDataStatus(BaseModel):
+    provider: str
+    configured: bool
+    error: Optional[str] = None
+
+
+@app.get("/api/marketdata/status", response_model=MarketDataStatus)
+def get_marketdata_status():
+    name = get_provider_name()
+    try:
+        get_provider()
+    except MarketDataConfigError as exc:
+        return {"provider": name, "configured": False, "error": str(exc)}
+    return {"provider": name, "configured": True, "error": None}
+
+
+class ProviderCandleBar(BaseModel):
+    time: int
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+class MarketDataCandlesResponse(BaseModel):
+    symbol: str
+    timeframe: str
+    provider: str
+    bars: list[ProviderCandleBar]
+
+
+@app.get("/api/marketdata/candles", response_model=MarketDataCandlesResponse)
+def get_marketdata_candles(
+    symbol: str = Query(...),
+    timeframe: str = Query(...),
+    start: int = Query(..., description="Unix seconds, inclusive"),
+    end: int = Query(..., description="Unix seconds, exclusive"),
+):
+    """Provider-synced OHLC candles - incrementally syncs [start, end) via
+    MarketDataService, then returns it. Deliberately separate from
+    /api/dataset: no SMC events (the provider layer doesn't compute those),
+    no fallback into the static dataset, no writes to its tables."""
+    if symbol not in SUPPORTED_SYMBOLS:
+        raise HTTPException(status_code=404, detail=f"Unsupported symbol '{symbol}'")
+    if not is_valid_timeframe(timeframe):
+        raise HTTPException(status_code=400, detail=f"Unknown timeframe '{timeframe}'")
+    if end <= start:
+        raise HTTPException(status_code=400, detail="`end` must be after `start`")
+
+    try:
+        provider = get_provider()
+    except MarketDataConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    service = MarketDataService(provider)
+    try:
+        candles = service.get_candles(symbol, timeframe, start, end)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Provider request failed: {exc}") from exc
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "provider": provider.name,
+        "bars": [
+            {"time": c.timestamp_utc, "open": c.open, "high": c.high, "low": c.low, "close": c.close}
+            for c in candles
+        ],
+    }

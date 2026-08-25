@@ -77,8 +77,10 @@ below):
    Run manually, on demand, whenever a CSV changes or the structure-detection
    logic changes. Drops and fully recreates `data.duckdb`.
 3. **The market-data provider layer** — `app/marketdata/*` +
-   `sync_market_data.py`. A separate, currently-disconnected pipeline (see
-   below).
+   `sync_market_data.py`, plus (as of Phase 2) `GET /api/marketdata/status`
+   and `GET /api/marketdata/candles` in `app/main.py`. A separate pipeline
+   with its own tables and routes, additive to (never merged into) the live
+   read path above (see below).
 
 ## Data flow (end to end, current state)
 
@@ -100,9 +102,11 @@ DataLayer.ts (frontend: fetch, in-memory cache, request dedup, windowing)
 
 `data.duckdb`'s `candles` table is populated *only* from the root CSVs via
 `build_db.py`. The `marketdata/` provider layer (FXCM/OANDA) writes to its
-*own* tables (`market_candles`, `instruments`, `data_sync_jobs`) via a
-separate CLI script and is not read by `/api/dataset` today — see
-"Market-data provider layer" below.
+*own* tables (`market_candles`, `instruments`, `data_sync_jobs`) via
+`sync_market_data.py` (CLI) or the live `GET /api/marketdata/candles` route
+(Phase 2) — neither path is read by `/api/dataset`, and `/api/dataset`'s
+`candles` table is never written by either — see "Market-data provider
+layer" below.
 
 ## Market-data flow — DuckDB's role
 
@@ -342,19 +346,40 @@ levels), `timeframes.py` (aggregation up from a `BASE_TIMEFRAME`),
 `MARKET_DATA_PROVIDER`, never a provider-specific env var read outside this
 module).
 
-Reachable today only via `sync_market_data.py`, a manual CLI entry point
-(`python sync_market_data.py EURUSD 2026-07-01 2026-08-01`). **Not wired to
-any FastAPI route and not read by `/api/dataset`.** Architecturally sound
-(clean provider abstraction, real incremental-sync logic, validated
-writes), but disconnected from the live app. **PARTIAL.** Phase 2 connects
-this.
+Reachable via `sync_market_data.py` (manual CLI,
+`python sync_market_data.py EURUSD 2026-07-01 2026-08-01`) **and**, as of
+Phase 2, two live FastAPI routes in `app/main.py`:
+
+- `GET /api/marketdata/status` — `{provider, configured, error}`, mirroring
+  `/api/telegram/status`'s pattern. Never throws; a missing/misconfigured
+  provider is a normal, reportable state.
+- `GET /api/marketdata/candles?symbol&timeframe&start&end` — calls
+  `MarketDataService.get_candles()` (the same incremental-sync path
+  `sync_market_data.py` already used), returning provider-synced OHLC bars.
+  404 on an unsupported symbol, 400 on an invalid timeframe/range, 503 if
+  the configured provider is missing credentials, 502 on a provider/network
+  failure.
+
+Both routes are strictly additive: they read/write only
+`market_candles`/`instruments`/`data_sync_jobs` (via `marketdata/repository.py`),
+never the `candles`/`symbols` tables `build_db.py` produces, and
+`/api/dataset`'s response shape and behavior are unchanged. The frontend
+reaches these through `DataLayer.ts`'s `getProviderStatus()` /
+`getProviderCandles()` (additive interface methods; `StaticJsonDataLayer`
+rejects them with a clear "not available in static mode" error), consumed
+today by `StatusBar.tsx`'s provider indicator + manual per-symbol sync
+action — a deliberately small, opt-in consumer, not a change to
+`ChartPane`'s primary (`getSymbolData`/`/api/dataset`) data path.
+**PARTIAL → CONNECTED (Phase 2).** Real-broker verification (an actual
+OANDA/FXCM account, not the mocked provider the test suite uses) is still
+outstanding — see the Phase 2 section of `ROADMAP.md`.
 
 ## Current persistence model
 
 | Data | Where it lives today | Durability |
 |---|---|---|
 | Candles + DB-precomputed SMC events + the one hardcoded backtest's trades/stats | `data.duckdb` (backend, git-LFS) | Durable, server-side, but rebuilt destructively by `build_db.py` |
-| Provider-synced candles (FXCM/OANDA) | `data.duckdb`'s separate `market_candles` etc. tables, via `marketdata/repository.py` | Durable, server-side, but not read by the live API |
+| Provider-synced candles (FXCM/OANDA) | `data.duckdb`'s separate `market_candles` etc. tables, via `marketdata/repository.py` | Durable, server-side; readable via `GET /api/marketdata/candles` (Phase 2), still a separate dataset from `/api/dataset`'s `candles` table |
 | Journal entries | browser `localStorage` (`journalStore.ts`) | Survives reloads, **not** a browser reset/reinstall, not shared across devices |
 | Drawings | browser `localStorage` (`drawingStore.ts`) | Same as journal |
 | Market-structure ground-truth dataset | browser `localStorage` (`marketStructureStore.ts`) + manual JSON export | Same as journal, with a manual export escape hatch |
@@ -435,11 +460,18 @@ Extend these; do not replace them without a demonstrated, specific reason:
    per binding forever; the likely driver of super-linear scaling. Not a
    problem yet at 100k-bar scale, but a real ceiling for more symbols, more
    history, or heavier `strategy()`-style scripts.
-5. **`data.duckdb` is both a checked-in build artifact and a potential live-sync
-   target.** `build_db.py` drops and fully recreates it; any future
-   provider-sync writes into the same file (Phase 2) must not collide with
-   that workflow, and the two need an explicit reconciliation rule, not an
-   implicit one.
+5. **`data.duckdb` is both a checked-in build artifact and a live-sync
+   target.** `build_db.py` (`os.remove(DB_PATH)` then `duckdb.connect(...)`
+   fresh) deletes the *entire file* — `market_candles`/`instruments`/
+   `data_sync_jobs` included, not just `candles` — so running it after any
+   provider sync silently discards that synced data. Reconciliation rule
+   (Phase 2): `build_db.py` remains a manual, offline, developer-run
+   operation exactly as before; nothing in the `/api/marketdata/*` request
+   path ever triggers or races with it. A developer who runs both should
+   re-sync provider data after rebuilding, the same way they'd re-run
+   `sync_market_data.py` after any fresh `data.duckdb` — a documented
+   operational note, not a code-level guard, since Phase 2 deliberately
+   does not change `build_db.py`.
 6. **Root-level legacy files** (`engine.py`, `smc_backtest_app.html`,
    duplicate `.pine` files, raw CSVs outside `terminal/`) — not a blocker,
    but a standing source of "which file is real" confusion. Not deleted or
@@ -474,13 +506,20 @@ Where a rule doesn't exist yet, it says so explicitly rather than leaving it
 implicit.
 
 **Market data (candles).**
-- Source of truth today: `data.duckdb`'s `candles` table, populated only by
-  `build_db.py` from the root-level CSVs.
-- The `marketdata/` provider layer's `market_candles` table is a *separate,
-  not-yet-authoritative* dataset until Phase 2 explicitly defines how (or
-  whether) it supersedes or merges with `candles`. Do not silently start
-  reading from `market_candles` in `/api/dataset` without that decision
-  being made and documented here.
+- Source of truth for `/api/dataset` (and everything downstream of it —
+  `ChartPane.tsx`, the Pine interpreter, the replay engine, the
+  market-structure logger): `data.duckdb`'s `candles` table, populated only
+  by `build_db.py` from the root-level CSVs. **Unchanged by Phase 2.**
+- **Phase 2 decision (final, not provisional):** the `marketdata/` provider
+  layer's `market_candles` table is and remains a *separate, additive*
+  dataset, exposed through its own route namespace
+  (`GET /api/marketdata/status`, `GET /api/marketdata/candles`) rather than
+  superseding or merging with `candles`. `/api/dataset` does not read
+  `market_candles`, and `market_candles` is never written by `build_db.py`
+  or read by anything in the `candles`-based data flow above. If a future
+  phase wants provider data to actually replace or supplement the static
+  dataset for specific symbols, that is a new, separately-documented
+  decision — not something this phase's routes do implicitly.
 
 **Market structure (swings/BOS/CHoCH/FVG/order blocks/liquidity/volume
 imbalance).**
