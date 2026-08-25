@@ -3,8 +3,15 @@ EURUSD*.csv
 GBPUSD*.csv
 XAUUSD*.csv
 
-# Claude Code local tool state - not project source
-.claude/
+# Claude Code local tool state - not project source, EXCEPT the
+# project-specific autonomous-dev-agent infrastructure below, which is
+# durable, shared project source (agent briefs + the orchestrator skill)
+# and must be committed like any other project file.
+.claude/*
+!.claude/agents/
+!.claude/agents/**
+!.claude/skills/
+!.claude/skills/**
 
 # Misc local notes
 Текстовый документ.txt

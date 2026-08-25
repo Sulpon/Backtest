@@ -16,7 +16,7 @@ deployment setup) are extended, not rewritten, in every phase.
 
 ## Phase 1 — Consolidate & Document
 
-**Status: in progress (this pass).**
+**Status: Complete (verified 2026-08-26).**
 
 **Objective.** Produce a durable, accurate architecture reference
 (`docs/ARCHITECTURE.md`) and this roadmap, so every later phase has a
@@ -57,6 +57,8 @@ database schema, or tests. No files deleted or moved.
 
 ## Phase 2 — Connect Market Data Providers
 
+**Status: Needs human decision (provide real OANDA/FXCM credentials for full production verification, or explicitly accept mocked-provider verification as sufficient for now) — core connectivity verified 2026-08-25, see note below.**
+
 **Objective.** Wire the existing `backend/app/marketdata/` provider layer
 (FXCM/OANDA, incremental sync, validation) into the live API, so the app
 can serve provider-synced data instead of only the static, one-time
@@ -85,16 +87,32 @@ reads from).
   explicitly forbids merging `market_candles` into `candles` silently)
 
 **Verification criteria.**
-- A documented, explicit decision exists for how provider-synced data
-  relates to `build_db.py`-produced data (replaces it for supported
-  symbols? supplements it? separate endpoint entirely?).
-- Existing `/api/dataset` behavior for EURUSD/GBPUSD/XAUUSD is unchanged
-  unless that decision explicitly says otherwise.
-- `sync_market_data.py`'s existing CLI behavior still works.
-- New backend tests cover the new route(s); existing 68 backend tests still
-  pass.
-- `data.duckdb`'s destructive `build_db.py` rebuild and any live provider
-  sync do not race or corrupt each other (explicit rule, not assumed).
+- ✅ A documented, explicit decision exists for how provider-synced data
+  relates to `build_db.py`-produced data: separate endpoint entirely
+  (`GET /api/marketdata/status`, `GET /api/marketdata/candles`), never
+  merged into `/api/dataset` — documented in `docs/ARCHITECTURE.md`'s
+  market-data source-of-truth rule.
+- ✅ Existing `/api/dataset` behavior for EURUSD/GBPUSD/XAUUSD is unchanged —
+  `main.py`'s existing route/handler is untouched; the full existing
+  `test_dataset_windowing.py` suite still passes.
+- ✅ `sync_market_data.py`'s existing CLI behavior still works — untouched,
+  uses the same `MarketDataService` path the new routes call.
+- ✅ New backend tests cover the new route(s)
+  (`tests/test_marketdata_routes.py`, 10 tests against a mocked provider +
+  temp DuckDB); all 68 pre-existing backend tests still pass (78/78 total).
+- ✅ `data.duckdb`'s destructive `build_db.py` rebuild and any live provider
+  sync do not race or corrupt each other: `build_db.py` is unmodified and
+  stays a manual, offline operation; nothing in the new routes' request
+  path invokes it. The explicit rule (deleting `data.duckdb` also discards
+  synced `market_candles` data, so re-sync after a rebuild) is documented
+  in `docs/ARCHITECTURE.md`'s risk list.
+- ⏳ **Outstanding, not yet verified:** real OANDA/FXCM credentials. All
+  tests above use a mocked `MarketDataProvider` (no network calls) — the
+  actual HTTP request/response handling in `providers/oanda.py` and
+  `providers/fxcm.py` (unchanged by this phase, but never yet exercised
+  against a live account through the new routes) still needs a real
+  practice-account run of `GET /api/marketdata/candles` before this is
+  called production-verified end-to-end.
 
 **What must NOT be changed.** The Pine interpreter, replay engine,
 DuckDB/FastAPI read path's existing endpoints' response shapes, or the
@@ -106,6 +124,8 @@ for why that matters).
 ---
 
 ## Phase 3 — General Backtesting Engine
+
+**Status: Not started.**
 
 **Objective.** Generalize `run_backtest()` (currently one hardcoded
 SMC/fib-OTE strategy, EURUSD 1h only, run once at build time) into a
@@ -159,6 +179,8 @@ regression check (above) explicitly signs off on a difference.
 ---
 
 ## Phase 4 — Pine `strategy()` Semantics
+
+**Status: Not started.**
 
 **Objective.** Add real Pine `strategy()` semantics to the interpreter —
 automatic position tracking, entries/exits, position sizing, equity curve —
@@ -215,6 +237,8 @@ reason requires changing it.
 
 ## Phase 5 — Persistent Trading Data
 
+**Status: Not started.**
+
 **Objective.** Move journal, drawings, and market-structure ground-truth
 data off `localStorage`-only persistence onto durable, server-side storage
 (DuckDB or a dedicated lightweight store), while preserving the existing
@@ -263,6 +287,8 @@ and should not be redesigned here), the Zustand-per-concern pattern.
 ---
 
 ## Phase 6 — Indicator-vs-Ground-Truth Evaluation
+
+**Status: Not started.**
 
 **Objective.** Build the comparison/scoring layer that evaluates
 engine/Pine-detected market structure (or a Phase-3/4 backtest's trades)
@@ -316,6 +342,8 @@ phase evaluates their output, it doesn't change how they compute it).
 
 ## Phase 7 — Drawing/Analytics Expansion
 
+**Status: Not started.**
+
 **Objective.** Fill in the remaining 25 non-live drawing tools
 (channels, most Fibonacci variants, shapes beyond rectangle, annotations,
 brushes, `riskreward`) and build out performance-analytics views (equity curves,
@@ -361,6 +389,8 @@ tools' behavior.
 ---
 
 ## Phase 8 — Trading Logic / Indicator Research Agent
+
+**Status: Not started.**
 
 **Objective.** Close the loop: an agent-assisted (or structured manual)
 workflow that takes the user's own recorded trading behavior, turns it into
@@ -469,6 +499,13 @@ answer.
 
 ## Cross-phase notes
 
+- **Status vocabulary (used by every phase's `Status:` line above), for the
+  autonomous orchestrator (`.claude/skills/roadmap-next/`) to scan
+  mechanically**: `Not started`, `In progress`, `Blocked (needs Phase N)`,
+  `Needs human decision (<reason>)`, `Complete (verified <date>)`. The
+  orchestrator selects the first phase without `Complete` status whose
+  Dependencies are all `Complete`; a `Needs human decision` phase is
+  reported to the human but does not block work on other unblocked phases.
 - **Ordering is dependency-driven, not strictly sequential.** Phase 7's
   drawing-tool expansion, in particular, can proceed in parallel with
   Phases 2-6 if capacity allows — it has no hard dependency on them beyond
