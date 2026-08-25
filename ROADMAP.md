@@ -125,7 +125,61 @@ for why that matters).
 
 ## Phase 3 — General Backtesting Engine
 
-**Status: Not started.**
+**Status: In progress — decisions recorded 2026-08-26; Task 1 (regression
+baseline harness) complete and committed 2026-08-26. Task 2
+(`BacktestConfig`/`RR_RATIO` extraction, per Decision 1 below) is next,
+unblocked. See "Decisions" below before starting any further task.**
+
+**Task 1 — done, 2026-08-26.** Added
+`terminal/backend/tests/test_backtest_regression.py` +
+`terminal/backend/tests/fixtures/eurusd_1h_backtest_golden.json`: a
+byte-for-byte baseline of the CURRENT, unmodified `run_backtest()` against
+the checked-in `data.duckdb` (trades/stats/order_blocks compared directly;
+the remaining 13 of 16 return keys compared via a committed SHA-256
+manifest). Zero production files modified — test-only. 85/85 backend tests
+pass (was 78/78), 76/76 frontend tests pass, build clean. One code-review
+finding fixed during this task: `order_blocks` is not naturally sorted by
+`bar_index` the way `trades` is (it's derived from `fib_legs`, which
+append in impulse-confirmation order, not anchor-start order) — the test
+now sorts both the engine's output and the DB rows by the same canonical
+key before comparing, an order-independent content comparison, verified
+against a diagnostic confirming the two sides are otherwise an exact
+multiset match. This baseline is the evidence mechanism the "byte-for-byte
+reproducible" criterion below depends on for Task 2+; it does not itself
+touch or generalize the engine.
+
+**Decisions (recorded 2026-08-26, human-confirmed — final, not
+provisional, same status as Phase 2's decision above).** `platform-architect`
+flagged four design ambiguities in this phase's objective (see its
+analysis, referenced from the orchestrator session that recorded this);
+resolved as follows:
+
+1. **Parameter scope**: only `RR_RATIO` (`structure_engine.py:360`)
+   becomes a `BacktestConfig` parameter. Every other constant identified
+   (`DAILY_SWING_LEN`, `RETRACE_THRESHOLD`, the inline `0.71` OTE anchor,
+   `SWING_LEN`, `MAX_IMPULSE_BARS`, `FIB_USE_BODY`, `USE_LINE_SOURCE`, the
+   liquidity `tolerance_pct`, the fixed `-1.0` loss R) stays a fixed
+   constant, unchanged, until a future, separately-recorded decision opens
+   more of them up. Do not parameterize any of them as a side effect of
+   other Phase 3 work.
+2. **Symbol/timeframe validity rule**: the existing, already-documented
+   rule stands — fib-OTE entry/SL/TP logic and A/B/C/D daily-bias tagging
+   remain validated *only* for EURUSD 1h. The general engine may run
+   against any symbol/timeframe, but its output for anything other than
+   EURUSD 1h must be explicitly labeled unvalidated/experimental in both
+   the API response and any UI that surfaces it — never presented as a
+   checked backtest result. This is not new scope for Phase 3; it is a
+   confirmation that `structure_engine.py`'s and `build_db.py`'s existing
+   "no fabricated backtest results" rule is not overridden.
+3. **Strategy scope**: Phase 3 parameterizes the one existing SMC/fib-OTE
+   strategy only. A multi-strategy plugin/registry system is out of scope
+   for this phase — if wanted later, it needs its own roadmap phase and
+   its own explicit decision, not an implicit expansion of this one.
+4. **Deployment scope**: the on-demand backtest route stays local-only for
+   now, the same scoping already used for the Telegram integration. Do
+   not add `pandas`/`numpy` to `requirements.txt` (a §9 dependency change)
+   or attempt to get the on-demand route running on Vercel as part of this
+   phase.
 
 **Objective.** Generalize `run_backtest()` (currently one hardcoded
 SMC/fib-OTE strategy, EURUSD 1h only, run once at build time) into a
