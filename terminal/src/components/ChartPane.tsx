@@ -19,7 +19,9 @@ import { useSymbols } from "../data/useSymbols";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeName } from "../theme/ThemeProvider";
 import { useActiveWorkspace } from "../workspace/workspaceStore";
-import { chartOptions, candleOptions, paletteColor } from "./chartTheme";
+import { chartOptions, candleOptions, paletteColor, panelBackgroundColor } from "./chartTheme";
+import { useChartRegistry, type ChartSnapshotWindow } from "./chartRegistry";
+import { compositeSnapshot, drawTradeAnnotations } from "./chartSnapshot";
 import { DrawingLayer } from "../drawing/DrawingLayer";
 import { paneKey } from "../drawing/drawingStore";
 import { useReplayStore } from "../replay/replayStore";
@@ -33,6 +35,7 @@ import { sma, ema, bollingerBands } from "../indicators/indicators";
 import { useCustomIndicatorStore, type CustomIndicator } from "../indicators/customIndicatorStore";
 import { runCustomIndicator } from "../indicators/runCustomIndicator";
 import { usePineIndicators } from "../pine/usePineIndicators";
+import { LatestWins } from "../lib/latestWins";
 import { usePineIndicatorStore } from "../pine/pineIndicatorStore";
 import { PineIndicatorLayer } from "../pine/PineIndicatorLayer";
 import { collectPineTrades } from "../pine/pineTradesAdapter";
@@ -41,6 +44,18 @@ import { nearestIndexByTime } from "../lib/bars";
 import "./ChartPane.css";
 
 const FVG_FORWARD_BARS = 20;
+
+// The fast-paint window's bar count (see the fetch effect below and the
+// backend's own `limit` param doc comment). Empirically sized: the
+// chart's own default view is the last 300 bars, and the largest built-in
+// lookback anything render-time uses against it is
+// CUSTOM_INDICATOR_LOOKBACK_BARS below (200) - 3000 comfortably covers
+// both plus generous scroll-back room before the full dataset (fetched
+// concurrently, not after) typically lands ~1-2s later. Cuts the initial
+// setData()/array-remap cost from the audit's measured ~1.1-1.3s (100k
+// bars) to a small fraction of that, without truncating anything the user
+// actually sees first.
+const INITIAL_WINDOW_BARS = 3000;
 
 function asTime(sec: number): Time {
   return sec as UTCTimestamp;
@@ -130,6 +145,8 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   const dataRef = useRef<SymbolTimeframeData | null>(null); // the currently-RENDERED (possibly cursor-sliced) view
   const latestDataRef = useRef<SymbolTimeframeData | null>(null); // always the full fetched dataset
   const prevDataRef = useRef<SymbolTimeframeData | null>(null);
+  const latestWinsRef = useRef<LatestWins | null>(null);
+  if (!latestWinsRef.current) latestWinsRef.current = new LatestWins();
   const themeRef = useRef<ThemeName>("dark");
   const smcVisibleRef = useRef<Record<SmcOverlayId, boolean>>({
     swings: false,
@@ -212,12 +229,35 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   const prevJumpNonceRef = useRef(jumpNonce);
 
   const [data, setData] = useState<SymbolTimeframeData | null>(null);
+  // True once `data` holds the complete (unwindowed) dataset - see the
+  // fetch effect below. Pine indicators, the Replay Engine, and the
+  // market-structure logger must never run against the fast-paint window,
+  // only ever the full history, so this gates usePineIndicators' bars arg
+  // and the replay setDataset() call further down.
+  const [dataIsFull, setDataIsFull] = useState(false);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [chartReady, setChartReady] = useState(false);
   const [bodyEl, setBodyEl] = useState<HTMLDivElement | null>(null);
   const [sessionBandRects, setSessionBandRects] = useState<{ left: number; width: number; color: string }[]>([]);
-  latestDataRef.current = data;
-  const pineResults = usePineIndicators(data?.bars);
+  // Only ever the COMPLETE dataset, per this ref's own contract (relied on
+  // by takeSnapshot() and the replay-cursor-follow effect below) - never
+  // the transient fast-paint window. While only the window has landed,
+  // this simply keeps pointing at whatever the previous fetch cycle left
+  // it as (the prior symbol/timeframe's full data, or null on first load).
+  if (dataIsFull) latestDataRef.current = data;
+  // Gated on BOTH dataIsFull AND `data` actually matching the pane's
+  // CURRENT symbol/timeframe - dataIsFull alone isn't enough: the instant
+  // paneSymbol/paneTimeframe change, `data`/`dataIsFull` still hold the
+  // PREVIOUS combo's values (nothing has set them yet), and status flips
+  // to "loading" synchronously in the same tick, which by itself causes a
+  // re-render - on exactly that render, `dataIsFull` would still read
+  // true from the old combo, so gating on it alone let Pine keep showing
+  // the old symbol's results for the ~100-150ms before the new data
+  // (windowed or full) actually lands. Checking the symbol/timeframe match
+  // too closes that gap: the moment the pane targets a new combo, this
+  // becomes false immediately, before any fetch has even resolved.
+  const dataMatchesPane = data?.symbol === paneSymbol && data?.timeframe === paneTimeframe;
+  const pineResults = usePineIndicators(dataIsFull && dataMatchesPane ? data?.bars : undefined, paneSymbol, paneTimeframe);
   const removedPineTrades = usePineTradeOverridesStore((s) => s.removed);
   // A visible Pine indicator that records trades (backtest.recordTrade -
   // see interpreter.ts) takes over the pane-header stat entirely: that's
@@ -662,6 +702,146 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     trimPool(chart, tradePool, tradeIdx);
   }
 
+
+  // Milestone 3 (Telegram trade review) - see chartRegistry.ts/
+  // chartSnapshot.ts for the surrounding design. Reuses this exact
+  // component's own chart/series/overlay-rendering rather than a second
+  // renderer: temporarily frames the requested window, forces a synchronous
+  // overlay/marker re-render (renderOverlays is normally reached via the
+  // chart's own 80ms-debounced pan/zoom handler - a screenshot can't wait
+  // on that), waits a couple of animation frames for the canvas to actually
+  // paint, screenshots, then restores exactly what was visible before.
+  //
+  // During active replay, dataRef.current only holds the cursor-sliced
+  // dataset (see the replay-cursor effect below) - a trade past the
+  // current cursor wouldn't even be in the series yet, so this temporarily
+  // swaps in the full dataset for the capture and swaps the sliced view
+  // back afterward, exactly mirroring how the replay-cursor effect itself
+  // pushes data into the series.
+  async function takeSnapshot(snapshotWindow: ChartSnapshotWindow): Promise<string> {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    const full = latestDataRef.current;
+    if (!chart || !series || !full) throw new Error("Chart is not ready yet");
+    // latestDataRef only ever holds a COMPLETE dataset (see its own doc
+    // comment), but during the brief window right after a symbol/timeframe
+    // switch it can still be the PREVIOUS one - the fast-paint window has
+    // already repainted the chart and updated chartRegistry's symbol/
+    // timeframe for this pane, but the full dataset for the NEW combo
+    // hasn't landed yet. Guard against capturing (and mislabeling) the old
+    // symbol's chart under the new one's name - same reasoning as the Pine
+    // staleness fix.
+    if (full.symbol !== paneSymbol || full.timeframe !== paneTimeframe) {
+      throw new Error("Chart is still loading this symbol/timeframe - try again in a moment");
+    }
+
+    const wasReplaySliced = dataRef.current !== full;
+    const renderedBeforeCapture = dataRef.current;
+    const originalRange = chart.timeScale().getVisibleRange();
+
+    if (wasReplaySliced) {
+      dataRef.current = full;
+      series.setData(full.bars.map((b) => ({ ...b, time: asTime(b.time) })));
+    }
+
+    // A trade-review snapshot always renders dark, and always shows the
+    // structure that led into the trade, regardless of whatever theme/
+    // toggles the user currently happens to have live - that's the whole
+    // point of a review image, not an accident of whatever was last
+    // clicked. Overriding the REFS (not analysisStore/ThemeProvider
+    // themselves) means this never touches the real theme toggle or
+    // Analysis Hub checkboxes or triggers a re-render of them - purely a
+    // capture-time override, restored in the finally block below
+    // regardless of how capture finishes.
+    const originalTheme = themeRef.current;
+    themeRef.current = "dark";
+    chart.applyOptions(chartOptions("dark", chartFontSizeRef.current));
+    series.applyOptions(candleOptions("dark"));
+    const originalSmcVisible = smcVisibleRef.current;
+    smcVisibleRef.current = { ...originalSmcVisible, bos: true, choch: true };
+
+    // setVisibleRange() does not take effect synchronously - reading
+    // getVisibleRange() immediately after still returns the OLD range;
+    // lightweight-charts only applies it on its own next internal tick.
+    // Every other caller of setVisibleRange() in this component gets away
+    // without knowing that because the chart's own visibleTimeRangeChange
+    // event eventually fires and the existing 80ms-debounced scheduleOverlay
+    // (above) re-renders overlays for the real new range shortly after -
+    // invisible in normal use, but a screenshot can't just hope to win that
+    // race. Waiting for the SAME event here (instead of a fixed delay,
+    // which would be exactly as fragile) is what makes renderOverlays()
+    // below compute its from/to window against the range that's actually
+    // about to be painted, not a stale one - confirmed via direct
+    // reproduction: without this wait, BOS/FVG series were being created
+    // against the OLD (pre-snapshot) visible window and ended up
+    // positioned entirely outside the frame that was actually captured.
+    await new Promise<void>((resolve) => {
+      // Safety net, not the primary signal: if the requested window happens
+      // to exactly match what's already visible, the range genuinely never
+      // "changes" and this event would never fire - a fixed fallback delay
+      // here only guards that edge case, it isn't relied on for the normal
+      // case above.
+      const timeScale = chart.timeScale();
+      const timeout = window.setTimeout(resolve, 500);
+      function onRangeChanged() {
+        timeScale.unsubscribeVisibleTimeRangeChange(onRangeChanged);
+        window.clearTimeout(timeout);
+        resolve();
+      }
+      timeScale.subscribeVisibleTimeRangeChange(onRangeChanged);
+      timeScale.setVisibleRange({ from: asTime(snapshotWindow.fromTime), to: asTime(snapshotWindow.toTime) });
+    });
+    renderOverlays();
+    // a couple of frames for the canvas to actually paint the new series
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+    try {
+      const chartCanvas = chart.takeScreenshot();
+      const pineCanvas = bodyEl?.querySelector<HTMLCanvasElement>(".pine-indicator-layer-canvas") ?? null;
+
+      let annotationCanvas: HTMLCanvasElement | null = null;
+      const rt = snapshotWindow.reviewedTrade;
+      if (rt) {
+        const dpr = window.devicePixelRatio || 1;
+        const widthPx = chartCanvas.width / dpr;
+        const heightPx = chartCanvas.height / dpr;
+        const timeScale = chart.timeScale();
+        // Extends exactly [entryTime, exitTime] - the trade's own real
+        // duration - not the wider snapshot window (a short trade filling
+        // the whole window would misrepresent how long it was actually
+        // open).
+        const leftPx = timeScale.timeToCoordinate(asTime(rt.entryTime));
+        const rightPx = timeScale.timeToCoordinate(asTime(rt.exitTime));
+        const entryPx = series.priceToCoordinate(rt.entryPrice);
+        const slPx = series.priceToCoordinate(rt.sl);
+        const tpPx = series.priceToCoordinate(rt.tp);
+        if (leftPx != null && rightPx != null && entryPx != null && slPx != null && tpPx != null) {
+          annotationCanvas = drawTradeAnnotations(widthPx, heightPx, dpr, {
+            leftPx,
+            rightPx,
+            entryPx,
+            slPx,
+            tpPx,
+            setupLabel: rt.setup,
+          });
+        }
+      }
+
+      return compositeSnapshot(chartCanvas, pineCanvas, annotationCanvas, panelBackgroundColor("dark"));
+    } finally {
+      themeRef.current = originalTheme;
+      chart.applyOptions(chartOptions(originalTheme, chartFontSizeRef.current));
+      series.applyOptions(candleOptions(originalTheme));
+      smcVisibleRef.current = originalSmcVisible;
+      if (wasReplaySliced && renderedBeforeCapture) {
+        dataRef.current = renderedBeforeCapture;
+        series.setData(renderedBeforeCapture.bars.map((b) => ({ ...b, time: asTime(b.time) })));
+      }
+      if (originalRange) chart.timeScale().setVisibleRange(originalRange);
+      renderOverlays();
+    }
+  }
+
   const REPLAY_WINDOW_BARS = 150;
 
   // Keeps the cursor comfortably in view during replay. Always recomputes an
@@ -763,6 +943,21 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Registers this pane with the chart registry (see chartRegistry.ts) so
+  // a non-chart component (the trade journal's "Send to Telegram" button)
+  // can find "the mounted pane currently showing symbol X on timeframe Y"
+  // and request a snapshot from it. Re-registers whenever the pane's own
+  // symbol/timeframe/data changes so the registry entry never points at a
+  // stale takeSnapshot closure; unregisters on unmount so a closed pane
+  // can't be found.
+  useEffect(() => {
+    if (!chartReady || !data) return;
+    const paneId = props.api.id;
+    useChartRegistry.getState().register(paneId, { symbol: paneSymbol, timeframe: paneTimeframe, takeSnapshot });
+    return () => useChartRegistry.getState().unregister(paneId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartReady, data, paneSymbol, paneTimeframe]);
+
   // re-theme on theme change (colors come from the theme string directly,
   // not from computed CSS - see chartTheme.ts for why); also re-run whenever
   // an Analysis-hub SMC or session toggle flips, since that changes what
@@ -777,32 +972,84 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [theme, smcVisible, sessionsVisible, chartFontSize, indicators, customIndicators, pendingBar]);
 
-  // fetch data on symbol/timeframe change
+  // fetch data on symbol/timeframe change. Normally two requests fire
+  // concurrently: a small, fast window for an immediate paint, and the
+  // full history that every other feature (replay, Pine, market-structure
+  // logging) actually needs. Whichever lands can update the chart's
+  // candles/native overlays, but the full fetch always wins if both are in
+  // flight - fullArrived stops a slower windowed response from downgrading
+  // an already-applied complete dataset back to a partial one, and
+  // LatestWins (see that module's doc comment) stops a stale response from
+  // EITHER request (windowed or full) landing after the user has already
+  // switched to a different symbol/timeframe from overwriting what's on
+  // screen now - exactly the "EURUSD resolves after GBPUSD was applied"
+  // race.
+  //
+  // When the full dataset is ALREADY cached (revisiting a symbol/timeframe
+  // this session), the windowed fetch is skipped entirely - firing it
+  // anyway would cost a real network round-trip AND a second wasted
+  // render pass moments before the already-available full data replaces
+  // it. This is what makes a warm revisit close to instant rather than
+  // merely fast.
   useEffect(() => {
-    let cancelled = false;
     setStatus("loading");
+    // dataIsFull is deliberately NOT reset here - see each handler below.
+    // Resetting it eagerly, before either fetch has resolved, caused the
+    // [data, dataIsFull] effect to re-run immediately with the PREVIOUS
+    // combo's `data` paired with a new dataIsFull=false, re-applying
+    // (setData + renderOverlays, ~150-200ms wasted on a 100k-bar dataset)
+    // data that hadn't actually changed - measured while chasing down why
+    // a fully-cached warm switch wasn't as fast as the cache-hit alone
+    // should make it. Leaving it untouched means dataIsFull only ever
+    // changes at the exact moment `data` does, alongside it.
+    const token = latestWinsRef.current!.start();
+    let fullArrived = false;
+
+    if (!dataLayer.hasCachedSymbolData(paneSymbol, paneTimeframe)) {
+      dataLayer
+        .getSymbolDataWindowed(paneSymbol, paneTimeframe, INITIAL_WINDOW_BARS)
+        .then((d) => {
+          if (!token.isCurrent() || fullArrived) return;
+          setData(d);
+          setDataIsFull(false);
+          setStatus("ready");
+        })
+        .catch(() => {
+          // The full fetch below is the one that surfaces a real failure -
+          // a failed fast-window fetch alone must never flip the pane to
+          // an error state while the full fetch might still succeed.
+        });
+    }
+
     dataLayer
       .getSymbolData(paneSymbol, paneTimeframe)
       .then((d) => {
-        if (cancelled) return;
+        if (!token.isCurrent()) return;
+        fullArrived = true;
         setData(d);
+        setDataIsFull(true);
         setStatus("ready");
       })
-      .catch(() => !cancelled && setStatus("error"));
-    return () => {
-      cancelled = true;
-    };
+      .catch(() => {
+        if (token.isCurrent()) setStatus("error");
+      });
   }, [paneSymbol, paneTimeframe]);
 
-  // a fresh dataset arrived: register it with the Replay Engine (which resets
-  // any prior cursor - bar indices from a different symbol/timeframe don't
-  // apply), push the full series, and set the default view. A non-primary
-  // pane never registers - it only ever reads the primary pane's cursor
-  // (converted to its own bar index below), never owns it.
+  // a fresh dataset arrived (windowed OR full - this runs for both, since
+  // both need their candles/overlays painted): register it with the
+  // Replay Engine (which resets any prior cursor - bar indices from a
+  // different symbol/timeframe don't apply), push the series, and set the
+  // default view. A non-primary pane never registers - it only ever reads
+  // the primary pane's cursor (converted to its own bar index below),
+  // never owns it. Replay registration itself is gated on dataIsFull: it
+  // needs the TRUE total bar count and trade list, which the fast-paint
+  // window's truncated arrays don't have - registering against those
+  // would give replay a wrong totalBars (and reset the cursor a second,
+  // pointless time moments later when the full dataset lands anyway).
   useEffect(() => {
     if (!data || !seriesRef.current || !markersRef.current || !chartRef.current) return;
     prevDataRef.current = data;
-    if (isPrimary) {
+    if (isPrimary && dataIsFull) {
       setDataset(
         data.bars.length,
         data.bars.map((b) => b.time),
@@ -819,7 +1066,7 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
 
     renderOverlays(); // also renders markers, windowed to the range just set above
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
+  }, [data, dataIsFull]);
 
   // A Pine indicator's "Apply From Date" (see PineSettingsDialog) governs
   // where a fresh dataset's default view starts, once one is set - without
@@ -880,7 +1127,17 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   // also use it - see the comment there.
   const pineStats = useMemo(() => (pineTrades.length > 0 ? computeLiveStats(pineTrades, data?.stats?.rr ?? 2.45) : null), [pineTrades, data]);
 
-  const displayStats = pineStats ?? liveStats ?? data?.stats ?? null;
+  // Gated on dataMatchesPane (see that flag's own doc comment near
+  // pineResults above) for the same reason Pine is: `data` (and so
+  // data.stats/data.trades) still holds the PREVIOUS symbol/timeframe's
+  // values for the brief window between paneSymbol/paneTimeframe changing
+  // and the new fetch actually landing. Without this, the header briefly
+  // showed the old symbol's own native trade count/win-rate under the new
+  // symbol's candles - smaller and shorter-lived than the Pine bug this
+  // was modeled after (a few hundred ms of network time, not ~20s of
+  // interpreter time), but the same class of "stale data presented as
+  // current" the user asked to eliminate everywhere, not just for Pine.
+  const displayStats = dataMatchesPane ? (pineStats ?? liveStats ?? data?.stats ?? null) : null;
 
   return (
     <div className="chart-pane">

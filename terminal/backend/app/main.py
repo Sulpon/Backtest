@@ -1,3 +1,5 @@
+import base64
+import binascii
 import os
 from typing import Literal, Optional
 
@@ -8,6 +10,20 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .db import get_connection
+
+# Optional local-dev convenience: loads backend/.env into the process
+# environment so TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID (and anything else
+# added to .env.example later) work without exporting real shell env vars.
+# Guarded because python-dotenv is a requirements-dev.txt-only dependency
+# (see that file) - production (Vercel) sets real env vars directly and
+# has never needed this, so its absence there must stay a no-op, not an
+# import error that takes down the whole app.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
 
 app = FastAPI(title="Terminal Data API", version="0.1.0")
 
@@ -27,7 +43,13 @@ allowed_origins = [o.strip() for o in (os.environ.get("CORS_ALLOWED_ORIGINS") or
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_methods=["GET"],
+    # POST needed as of the Telegram routes (app/telegram): a POST with a
+    # JSON body triggers a real CORS preflight (OPTIONS) request, unlike
+    # the GET-only routes above - "GET" alone let the preflight fail
+    # silently for any POST call with a Content-Type outside the CORS
+    # "simple request" allowlist (e.g. `Content-Type: application/json`),
+    # which is exactly what send-trade's JSON body does.
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 # /api/dataset responses run 5-11MB uncompressed (100k candles + tens of
@@ -35,7 +57,17 @@ app.add_middleware(
 # specifically on Vercel, which already Brotli-compresses at the edge
 # regardless of this middleware, but local dev (and any non-Vercel host)
 # had no compression at all before this.
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+#
+# compresslevel=4, not the zlib default of 9: measured on a real ~12MB
+# dataset payload, level 9 costs ~1200ms of pure CPU for a payload that's
+# only 14.8% of raw size, while level 4 costs ~110ms (11x faster) for
+# 16.5% of raw - a small compression-ratio difference for an order of
+# magnitude less time blocking the request. Levels 5-9 are where the
+# time/ratio curve inverts (198ms/6ms/.../1222ms for barely smaller
+# output), so 4 is the point past which paying more CPU stops being worth
+# it. See terminal/README.md#performance for the full level-by-level
+# benchmark this was chosen from.
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=4)
 
 Timeframe = Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
 
@@ -185,47 +217,85 @@ def get_quotes(timeframe: Timeframe = Query("1h")):
 
 
 @app.get("/api/dataset", response_model=SymbolTimeframeData)
-def get_dataset(symbol: str = Query(...), timeframe: Timeframe = Query(...)):
+def get_dataset(
+    symbol: str = Query(...),
+    timeframe: Timeframe = Query(...),
+    limit: Optional[int] = Query(
+        None,
+        ge=1,
+        description=(
+            "Return only the most recent `limit` bars (plus events that fall "
+            "entirely within that window), re-indexed so bar 0 of the "
+            "response is the first bar returned - not the dataset's true "
+            "bar 0. Omit for the full, unwindowed dataset (bar_index "
+            "unchanged, exactly as before this parameter existed). Used for "
+            "the fast initial paint (see DataLayer.ts); the frontend always "
+            "follows up with an unwindowed request for the same symbol/"
+            "timeframe to get the complete history every other feature "
+            "(replay, Pine indicators, market-structure logging) requires."
+        ),
+    ),
+):
     con = get_connection()
 
     exists = con.execute("SELECT 1 FROM symbols WHERE symbol = ?", [symbol]).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail=f"Unknown symbol '{symbol}'")
 
+    # window_start is the dataset's TRUE bar_index of the first bar this
+    # response includes - 0 (i.e. no windowing at all) when `limit` is
+    # omitted. Every bar-indexed column below is queried with
+    # `bar_index >= window_start` and re-indexed by subtracting it, so the
+    # response is always internally self-consistent (bar N in `bars` lines
+    # up with event bar-index N) regardless of whether it's windowed.
+    if limit is not None:
+        total = con.execute(
+            "SELECT COUNT(*) FROM candles WHERE symbol = ? AND timeframe = ?", [symbol, timeframe]
+        ).fetchone()[0]
+        window_start = max(0, total - limit)
+    else:
+        window_start = 0
+
     bars = con.execute(
         "SELECT time, open, high, low, close FROM candles "
-        "WHERE symbol = ? AND timeframe = ? ORDER BY bar_index",
-        [symbol, timeframe],
+        "WHERE symbol = ? AND timeframe = ? AND bar_index >= ? ORDER BY bar_index",
+        [symbol, timeframe, window_start],
     ).fetchall()
 
     swings = con.execute(
         "SELECT bar_index, price, type, kind FROM swing_points "
-        "WHERE symbol = ? AND timeframe = ? ORDER BY bar_index",
-        [symbol, timeframe],
+        "WHERE symbol = ? AND timeframe = ? AND bar_index >= ? ORDER BY bar_index",
+        [symbol, timeframe, window_start],
     ).fetchall()
 
+    # bar_start/bar_end (and order_blocks'/trades' two-column equivalents)
+    # span a range rather than a single bar - only included if the WHOLE
+    # span falls inside the window, never clamped/truncated at the edge.
+    # A structure that starts before the window simply isn't in this
+    # (intentionally partial, fast-paint-only) response; the very next,
+    # unwindowed request has it, exactly as today.
     bos = con.execute(
         "SELECT bar_start, bar_end, price, direction, kind FROM bos_events "
-        "WHERE symbol = ? AND timeframe = ? ORDER BY bar_end",
-        [symbol, timeframe],
+        "WHERE symbol = ? AND timeframe = ? AND bar_start >= ? ORDER BY bar_end",
+        [symbol, timeframe, window_start],
     ).fetchall()
 
     fvg = con.execute(
         "SELECT bar_index, top, bottom, direction FROM fvg_events "
-        "WHERE symbol = ? AND timeframe = ? ORDER BY bar_index",
-        [symbol, timeframe],
+        "WHERE symbol = ? AND timeframe = ? AND bar_index >= ? ORDER BY bar_index",
+        [symbol, timeframe, window_start],
     ).fetchall()
 
     volume_imbalance = con.execute(
         "SELECT bar_index, top, bottom, direction FROM volume_imbalance_events "
-        "WHERE symbol = ? AND timeframe = ? ORDER BY bar_index",
-        [symbol, timeframe],
+        "WHERE symbol = ? AND timeframe = ? AND bar_index >= ? ORDER BY bar_index",
+        [symbol, timeframe, window_start],
     ).fetchall()
 
     liquidity = con.execute(
         "SELECT bar_start, bar_end, price, direction FROM liquidity_events "
-        "WHERE symbol = ? AND timeframe = ? ORDER BY bar_end",
-        [symbol, timeframe],
+        "WHERE symbol = ? AND timeframe = ? AND bar_start >= ? ORDER BY bar_end",
+        [symbol, timeframe, window_start],
     ).fetchall()
 
     # order blocks + trades/stats only exist for EURUSD 1h - they come from
@@ -236,8 +306,9 @@ def get_dataset(symbol: str = Query(...), timeframe: Timeframe = Query(...)):
     order_blocks = []
     if symbol == "EURUSD" and timeframe == "1h":
         order_blocks = con.execute(
-            "SELECT bar_index, bar_end, top, bottom, direction FROM order_blocks WHERE symbol = ? ORDER BY bar_index",
-            [symbol],
+            "SELECT bar_index, bar_end, top, bottom, direction FROM order_blocks "
+            "WHERE symbol = ? AND bar_index >= ? ORDER BY bar_index",
+            [symbol, window_start],
         ).fetchall()
 
     trades = []
@@ -245,9 +316,11 @@ def get_dataset(symbol: str = Query(...), timeframe: Timeframe = Query(...)):
     if symbol == "EURUSD" and timeframe == "1h":
         trades = con.execute(
             "SELECT dir, entry_bar, entry_price, sl, tp, exit_bar, result, r, setup "
-            "FROM trades WHERE symbol = ? ORDER BY entry_bar",
-            [symbol],
+            "FROM trades WHERE symbol = ? AND entry_bar >= ? ORDER BY entry_bar",
+            [symbol, window_start],
         ).fetchall()
+        # Aggregate win-rate/expectancy stats describe the whole backtest,
+        # not any one bar range - never windowed, unlike everything above.
         stat_row = con.execute(
             "SELECT total, wins, losses, win_rate, expectancy, rr, breakeven_wr, by_setup "
             "FROM stats WHERE symbol = ?",
@@ -265,15 +338,26 @@ def get_dataset(symbol: str = Query(...), timeframe: Timeframe = Query(...)):
         "symbol": symbol,
         "timeframe": timeframe,
         "bars": [{"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4]} for r in bars],
-        "swingPoints": [{"bar": r[0], "price": r[1], "type": r[2], "kind": r[3]} for r in swings],
-        "bosEvents": [{"barStart": r[0], "barEnd": r[1], "price": r[2], "direction": r[3], "kind": r[4]} for r in bos],
-        "fvgEvents": [{"bar": r[0], "top": r[1], "bottom": r[2], "direction": r[3]} for r in fvg],
-        "orderBlocks": [{"bar": r[0], "barEnd": r[1], "top": r[2], "bottom": r[3], "direction": r[4]} for r in order_blocks],
-        "volumeImbalanceEvents": [{"bar": r[0], "top": r[1], "bottom": r[2], "direction": r[3]} for r in volume_imbalance],
-        "liquidityEvents": [{"barStart": r[0], "barEnd": r[1], "price": r[2], "direction": r[3]} for r in liquidity],
+        "swingPoints": [{"bar": r[0] - window_start, "price": r[1], "type": r[2], "kind": r[3]} for r in swings],
+        "bosEvents": [
+            {"barStart": r[0] - window_start, "barEnd": r[1] - window_start, "price": r[2], "direction": r[3], "kind": r[4]}
+            for r in bos
+        ],
+        "fvgEvents": [{"bar": r[0] - window_start, "top": r[1], "bottom": r[2], "direction": r[3]} for r in fvg],
+        "orderBlocks": [
+            {"bar": r[0] - window_start, "barEnd": r[1] - window_start, "top": r[2], "bottom": r[3], "direction": r[4]}
+            for r in order_blocks
+        ],
+        "volumeImbalanceEvents": [
+            {"bar": r[0] - window_start, "top": r[1], "bottom": r[2], "direction": r[3]} for r in volume_imbalance
+        ],
+        "liquidityEvents": [
+            {"barStart": r[0] - window_start, "barEnd": r[1] - window_start, "price": r[2], "direction": r[3]}
+            for r in liquidity
+        ],
         "trades": [
-            {"dir": r[0], "entryBar": r[1], "entryPrice": r[2], "sl": r[3], "tp": r[4],
-             "exitBar": r[5], "result": r[6], "r": r[7], "setup": r[8]}
+            {"dir": r[0], "entryBar": r[1] - window_start, "entryPrice": r[2], "sl": r[3], "tp": r[4],
+             "exitBar": r[5] - window_start, "result": r[6], "r": r[7], "setup": r[8]}
             for r in trades
         ],
         "stats": stats,
@@ -288,3 +372,93 @@ def get_dataset(symbol: str = Query(...), timeframe: Timeframe = Query(...)):
     # that second validation pass. response_model stays on the decorator
     # purely so /docs still shows the real response schema.
     return JSONResponse(content=payload)
+
+
+# ============================================================================
+# TELEGRAM TRADE REVIEW - Milestones 1-2 (connection/config/test message,
+# then sending a real existing trade's data). See
+# terminal/README.md#telegram-trade-review for the full milestone plan.
+# Deliberately local/self-hosted only for now - trade-review answers need
+# to persist server-side, and Vercel's serverless filesystem doesn't
+# (data.duckdb itself is fetched fresh at BUILD time for exactly this
+# reason - see fetch_db.py). Nothing here touches data.duckdb or any
+# existing route/table.
+# ============================================================================
+from .telegram.service import TelegramService  # noqa: E402 - after app setup, matching the rest of this file's route grouping
+
+
+class TelegramStatus(BaseModel):
+    configured: bool
+
+
+class TelegramTestResult(BaseModel):
+    ok: bool
+    error: Optional[str] = None
+
+
+@app.get("/api/telegram/status", response_model=TelegramStatus)
+def get_telegram_status():
+    return {"configured": TelegramService().configured}
+
+
+@app.post("/api/telegram/test", response_model=TelegramTestResult)
+def post_telegram_test():
+    result = TelegramService().send_message(
+        "✅ Test message from your backtesting terminal - Telegram is connected."
+    )
+    return {"ok": result.ok, "error": result.error}
+
+
+class TradeReviewConditions(BaseModel):
+    liquiditySweep: bool = False
+    bos: bool = False
+    choch: bool = False
+    fvg: bool = False
+
+
+class TradeReviewRequest(BaseModel):
+    # tradeId is the frontend's existing symbol:entryBar convention (see
+    # journalStore.ts's tradeKey()) - the backend trades table has no
+    # primary key of its own (identity is naturally (symbol, entry_bar)),
+    # so this reuses that same convention rather than inventing a second
+    # one. Every other field is exactly what's already on the frontend's
+    # Trade/SymbolTimeframeData objects (see src/data/types.ts) or derived
+    # from them client-side (rr, conditions, snapshotDataUrl) - the backend
+    # does no lookup or derivation of its own here, only formatting +
+    # sending.
+    tradeId: str
+    symbol: str
+    timeframe: str
+    direction: Literal["LONG", "SHORT"]
+    setup: str
+    entry: float
+    sl: float
+    tp: float
+    rr: float
+    resultR: float
+    closedAt: str
+    conditions: TradeReviewConditions
+    # Milestone 4 - "data:image/png;base64,...." from ChartPane's own
+    # takeSnapshot() (see chartSnapshot.ts), or omitted/None when no
+    # matching chart pane was open to capture from. Optional so the
+    # Milestone 2 plain-text send path keeps working unchanged.
+    snapshotDataUrl: Optional[str] = None
+
+
+def _decode_snapshot_data_url(data_url: str) -> Optional[bytes]:
+    """Fails soft (None, not an exception) on anything malformed - a bad
+    snapshot must degrade the send to text-only, never reject the whole
+    review (same reasoning as every other Telegram failure mode here)."""
+    try:
+        _, _, encoded = data_url.partition(",")
+        return base64.b64decode(encoded, validate=True) if encoded else None
+    except (binascii.Error, ValueError):
+        return None
+
+
+@app.post("/api/telegram/send-trade", response_model=TelegramTestResult)
+def post_telegram_send_trade(trade: TradeReviewRequest):
+    image_bytes = _decode_snapshot_data_url(trade.snapshotDataUrl) if trade.snapshotDataUrl else None
+    payload = trade.model_dump(exclude={"snapshotDataUrl"})
+    result = TelegramService().send_trade_review(payload, image_bytes=image_bytes)
+    return {"ok": result.ok, "error": result.error}

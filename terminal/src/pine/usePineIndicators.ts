@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CandleBar } from "../data/types";
 import { usePineIndicatorStore, type PineIndicator } from "./pineIndicatorStore";
 import { tokenize } from "./lexer";
@@ -6,6 +6,11 @@ import { parse, ParseError } from "./parser";
 import { Interpreter, PineRuntimeError, type Bar, type InputDef, type PineOutputs } from "./interpreter";
 import { buildStdlib } from "./stdlib";
 import type { WorkerRequest, WorkerResponse } from "./pine.worker";
+import { LatestWins } from "../lib/latestWins";
+import { datasetVersion, hashCode } from "./pineFingerprint";
+import { getCachedPineResult, persistentCacheKey, setCachedPineResult } from "./pineIndexedDbCache";
+
+export { datasetVersion } from "./pineFingerprint";
 
 export interface PineRunResult {
   indicator: PineIndicator;
@@ -18,6 +23,17 @@ export interface PineRunResult {
    * the front - PineIndicatorLayer must convert bar_index -> time using
    * this same array per-result, never a shared/full-dataset one. */
   windowedBars: CandleBar[];
+  /** Which symbol/timeframe/dataset this result was actually computed
+   * against - null for the synchronous preview call sites (settings
+   * dialog, Pine tab editor preview), which aren't tied to a live chart
+   * pane and have nothing to race against. A consumer rendering this
+   * result onto a specific pane should verify these match that pane's
+   * current symbol/timeframe before using it (see ChartPane/TradesPanel) -
+   * belt-and-suspenders on top of usePineIndicators' own staleness
+   * guard, per the "don't rely only on React state timing" requirement. */
+  symbol: string | null;
+  timeframe: string | null;
+  datasetVersion: string;
 }
 
 // Used only by the cheap, synchronous call sites below (the settings
@@ -42,7 +58,16 @@ export function runPineScript(indicator: PineIndicator, bars: CandleBar[]): Pine
     const ast = parse(tokenize(indicator.code));
     const interp = new Interpreter(ast, interpBars, stdlib, indicator.inputOverrides);
     const outputs = interp.run();
-    return { indicator, outputs, inputDefs: interp.inputDefs, fatalError: null, windowedBars: windowed };
+    return {
+      indicator,
+      outputs,
+      inputDefs: interp.inputDefs,
+      fatalError: null,
+      windowedBars: windowed,
+      symbol: null,
+      timeframe: null,
+      datasetVersion: datasetVersion(windowed),
+    };
   } catch (e) {
     const message = e instanceof ParseError || e instanceof PineRuntimeError ? e.message : e instanceof Error ? e.message : String(e);
     return {
@@ -51,6 +76,9 @@ export function runPineScript(indicator: PineIndicator, bars: CandleBar[]): Pine
       inputDefs: [],
       fatalError: message,
       windowedBars: windowed,
+      symbol: null,
+      timeframe: null,
+      datasetVersion: datasetVersion(windowed),
     };
   }
 }
@@ -105,13 +133,20 @@ function runOnWorker(code: string, bars: Bar[], inputOverrides: Record<string, u
 const resultCache = new Map<string, Promise<PineRunResult>>();
 const RESULT_CACHE_MAX = 16;
 
-function cacheKey(ind: PineIndicator, bars: CandleBar[]): string {
-  const first = bars[0]?.time ?? 0;
-  const last = bars[bars.length - 1]?.time ?? 0;
-  return `${ind.id}:${hashCode(ind.code)}:${JSON.stringify(ind.inputOverrides)}:${ind.startDate ?? ""}:${bars.length}:${first}:${last}`;
+/** Exported for tests. The in-memory (session-only) result cache key - see
+ * pineIndexedDbCache.ts for the persistent-across-reloads counterpart,
+ * which uses the same components (indicator id, code, overrides, startDate,
+ * dataset version) plus explicit symbol/timeframe. */
+export function cacheKey(ind: PineIndicator, bars: CandleBar[]): string {
+  return `${ind.id}:${hashCode(ind.code)}:${JSON.stringify(ind.inputOverrides)}:${ind.startDate ?? ""}:${datasetVersion(bars)}`;
 }
 
-function getOrComputeResult(ind: PineIndicator, bars: CandleBar[]): Promise<PineRunResult> {
+function getOrComputeResult(
+  ind: PineIndicator,
+  bars: CandleBar[],
+  symbol: string | null,
+  timeframe: string | null
+): Promise<PineRunResult> {
   const key = cacheKey(ind, bars);
   const cached = resultCache.get(key);
   if (cached) return cached;
@@ -129,10 +164,63 @@ function getOrComputeResult(ind: PineIndicator, bars: CandleBar[]): Promise<Pine
   // has no bars before it to record a trade from.
   const fromDate = ind.startDate ? bars.filter((b) => b.time >= ind.startDate!) : bars;
   const windowed = fromDate.length > WORKER_SAFETY_CAP_BARS ? fromDate.slice(fromDate.length - WORKER_SAFETY_CAP_BARS) : fromDate;
-  const interpBars = toInterpBars(windowed);
-  const promise = runOnWorker(ind.code, interpBars, ind.inputOverrides).then(
-    (res): PineRunResult => ({ indicator: ind, outputs: res.outputs, inputDefs: res.inputDefs, fatalError: res.fatalError, windowedBars: windowed })
-  );
+  const version = datasetVersion(windowed);
+
+  const promise = (async (): Promise<PineRunResult> => {
+    // A page reload wipes resultCache (in-memory only) but not IndexedDB -
+    // check there before paying for a real worker run. Only meaningful
+    // when the caller actually identified its symbol/timeframe (the
+    // synchronous preview call sites pass null/null and never reach here
+    // anyway - see runPineScript).
+    if (symbol && timeframe) {
+      const diskKey = persistentCacheKey(ind, symbol, timeframe, windowed);
+      const fromDisk = await getCachedPineResult(diskKey);
+      if (fromDisk) {
+        return {
+          indicator: ind,
+          outputs: fromDisk.outputs,
+          inputDefs: fromDisk.inputDefs,
+          fatalError: fromDisk.fatalError,
+          windowedBars: windowed,
+          symbol,
+          timeframe,
+          datasetVersion: version,
+        };
+      }
+    }
+
+    const interpBars = toInterpBars(windowed);
+    const res = await runOnWorker(ind.code, interpBars, ind.inputOverrides);
+    const result: PineRunResult = {
+      indicator: ind,
+      outputs: res.outputs,
+      inputDefs: res.inputDefs,
+      fatalError: res.fatalError,
+      windowedBars: windowed,
+      symbol,
+      timeframe,
+      datasetVersion: version,
+    };
+    // Fire-and-forget: never let a slow/failed disk write hold up handing
+    // the already-computed result back to the caller. A run that ended in
+    // fatalError is deliberately not persisted - there's no expensive
+    // computation to skip next time (it fails fast), and persisting a
+    // transient worker-side failure (rather than a real script bug) could
+    // otherwise hide a since-fixed environment issue behind a stale cached
+    // error.
+    if (symbol && timeframe && !res.fatalError) {
+      void setCachedPineResult(persistentCacheKey(ind, symbol, timeframe, windowed), {
+        outputs: res.outputs,
+        inputDefs: res.inputDefs,
+        fatalError: res.fatalError,
+        symbol,
+        timeframe,
+        datasetVersion: version,
+      });
+    }
+    return result;
+  })();
+
   resultCache.set(key, promise);
   return promise;
 }
@@ -140,36 +228,61 @@ function getOrComputeResult(ind: PineIndicator, bars: CandleBar[]): Promise<Pine
 /** Runs every visible Pine indicator over the given bars in a background
  * worker, keyed so a pan/zoom (which doesn't change `bars`' identity)
  * never re-runs it - only a genuine data/code/settings change does.
- * Returns [] until the first run resolves (and again briefly after a
- * dependency change) rather than blocking the render on it. */
-export function usePineIndicators(bars: CandleBar[] | undefined): PineRunResult[] {
+ *
+ * Two distinct kinds of change are handled differently on purpose:
+ *  - the DATASET changes (symbol/timeframe switch, i.e. `bars`' own
+ *    content is now a different dataset): `results` is cleared to []
+ *    SYNCHRONOUSLY before the new computation starts, so the caller's own
+ *    "still computing" state (results.length === 0) becomes true
+ *    immediately - the previous symbol/timeframe's lines/stats can never
+ *    render under the new candles, even for the ~20s+ a full recompute
+ *    can take. Previously `results` was left untouched until the new
+ *    computation resolved, which is what let GBPUSD candles render under
+ *    EURUSD's stale FVG boxes/trade stats for the entire compute window.
+ *  - only SETTINGS change (indicator added/removed/toggled, code edited,
+ *    an input overridden) on the SAME dataset: `results` is left alone
+ *    until the new value is ready, since a cache hit here resolves in
+ *    ~100-300ms and clearing first would just add a visible flash for no
+ *    benefit.
+ *
+ * Staleness of the async result itself is guarded independently of either
+ * of the above via LatestWins - see that module's doc comment. This is
+ * what makes "request A (EURUSD) resolves after request B (GBPUSD) was
+ * already applied" impossible regardless of React's own effect/state
+ * timing: A's setResults call is skipped because its token is no longer
+ * current by the time A resolves, full stop. */
+export function usePineIndicators(
+  bars: CandleBar[] | undefined,
+  symbol?: string | null,
+  timeframe?: string | null
+): PineRunResult[] {
   const items = usePineIndicatorStore((s) => s.items);
   const visible = items.filter((i) => i.visible);
   const key = visible.map((i) => `${i.id}:${hashCode(i.code)}:${JSON.stringify(i.inputOverrides)}:${i.startDate ?? ""}`).join("|");
   const [results, setResults] = useState<PineRunResult[]>([]);
+  const latestWinsRef = useRef<LatestWins | null>(null);
+  if (!latestWinsRef.current) latestWinsRef.current = new LatestWins();
+  const prevDatasetVersionRef = useRef<string | null>(null);
 
   useEffect(() => {
+    const version = bars && bars.length > 0 ? datasetVersion(bars) : null;
+    const isNewDataset = version !== prevDatasetVersionRef.current;
+    prevDatasetVersionRef.current = version;
+
     if (!bars || bars.length === 0 || visible.length === 0) {
       setResults([]);
       return;
     }
-    let cancelled = false;
+    if (isNewDataset) setResults([]);
 
-    Promise.all(visible.map((ind) => getOrComputeResult(ind, bars))).then((all) => {
-      if (!cancelled) setResults(all);
+    const token = latestWinsRef.current!.start();
+    const sym = symbol ?? null;
+    const tf = timeframe ?? null;
+    Promise.all(visible.map((ind) => getOrComputeResult(ind, bars, sym, tf))).then((all) => {
+      if (token.isCurrent()) setResults(all);
     });
-
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bars, key]);
+  }, [bars, key, symbol, timeframe]);
 
   return results;
-}
-
-function hashCode(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-  return h;
 }

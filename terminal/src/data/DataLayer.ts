@@ -14,6 +14,25 @@ export interface Quote {
 export interface DataLayer {
   listSymbols(): Promise<string[]>;
   getSymbolData(symbol: string, timeframe: Timeframe): Promise<SymbolTimeframeData>;
+  /** Same data, windowed to the most recent `limit` bars (see the backend's
+   * own doc comment on the `limit` param) - for the fast initial paint
+   * only. bar_index fields in the result are local to this windowed
+   * response, NOT the same indices getSymbolData's full result would use -
+   * callers must never mix a windowed result's event/trade bar indices
+   * with a full result's `bars` array, or vice versa. Never cached: it's a
+   * one-shot, quickly-superseded fetch, not something a caller would ever
+   * want to revisit. */
+  getSymbolDataWindowed(symbol: string, timeframe: Timeframe, limit: number): Promise<SymbolTimeframeData>;
+  /** Synchronous: would getSymbolData(symbol, timeframe) resolve from an
+   * already-issued request right now, with no new network round-trip?
+   * Lets a caller skip the fast-paint windowed fetch entirely when the
+   * full dataset is already in flight or settled - firing the windowed
+   * fetch anyway would cost a real (if small) network request AND a
+   * second wasted render pass moments before the (already-available)
+   * full data replaces it, for zero benefit. This is what makes "switch
+   * back to a symbol/timeframe already visited" actually near-instant
+   * rather than merely fast. */
+  hasCachedSymbolData(symbol: string, timeframe: Timeframe): boolean;
   /** Last/previous close per symbol - e.g. for the watchlist. Deliberately
    * NOT built from getSymbolData(): that returns the full multi-MB candle +
    * SMC event history per symbol, which a watchlist row (two numbers) never
@@ -26,9 +45,14 @@ export interface DataLayer {
  * into it explicitly with VITE_DATA_LAYER=static, it's never silently used. */
 export class StaticJsonDataLayer implements DataLayer {
   private cache = new Map<string, Promise<SymbolTimeframeData>>();
+  private quotesCache = new Map<string, Promise<Quote[]>>();
 
   async listSymbols(): Promise<string[]> {
     return ["EURUSD"];
+  }
+
+  hasCachedSymbolData(symbol: string, timeframe: Timeframe): boolean {
+    return this.cache.has(`${symbol}:${timeframe}`);
   }
 
   getSymbolData(symbol: string, timeframe: Timeframe): Promise<SymbolTimeframeData> {
@@ -44,26 +68,44 @@ export class StaticJsonDataLayer implements DataLayer {
     return pending;
   }
 
+  // Static/offline mode has no server-side slicing to windowto - the JSON
+  // files are pre-generated in full. Falls back to the regular (full,
+  // cached) fetch: correct, just without the fast-paint speedup, and never
+  // slower than this mode's own existing behavior.
+  getSymbolDataWindowed(symbol: string, timeframe: Timeframe): Promise<SymbolTimeframeData> {
+    return this.getSymbolData(symbol, timeframe);
+  }
+
   // No lightweight quote endpoint in static/offline mode - falls back to
   // the full per-symbol fetch (still benefits from the cache above, so this
-  // only costs full downloads on the very first watchlist paint).
-  async getQuotes(timeframe: Timeframe): Promise<Quote[]> {
-    const symbols = await this.listSymbols();
-    return Promise.all(
-      symbols.map(async (symbol): Promise<Quote> => {
-        try {
-          const d = await this.getSymbolData(symbol, timeframe);
-          const bars = d.bars;
-          return {
-            symbol,
-            last: bars.length ? bars[bars.length - 1].close : null,
-            prev: bars.length > 1 ? bars[bars.length - 2].close : null,
-          };
-        } catch {
-          return { symbol, last: null, prev: null };
-        }
-      })
-    );
+  // only costs full downloads on the very first watchlist paint). Cached
+  // by timeframe the same way getSymbolData is, so two callers asking for
+  // quotes at once (or React StrictMode's double-invoked effect in dev)
+  // share one in-flight computation instead of building two Promise.all
+  // trees over the same cached per-symbol data.
+  getQuotes(timeframe: Timeframe): Promise<Quote[]> {
+    let pending = this.quotesCache.get(timeframe);
+    if (!pending) {
+      pending = this.listSymbols().then((symbols) =>
+        Promise.all(
+          symbols.map(async (symbol): Promise<Quote> => {
+            try {
+              const d = await this.getSymbolData(symbol, timeframe);
+              const bars = d.bars;
+              return {
+                symbol,
+                last: bars.length ? bars[bars.length - 1].close : null,
+                prev: bars.length > 1 ? bars[bars.length - 2].close : null,
+              };
+            } catch {
+              return { symbol, last: null, prev: null };
+            }
+          })
+        )
+      );
+      this.quotesCache.set(timeframe, pending);
+    }
+    return pending;
   }
 }
 
@@ -72,10 +114,16 @@ export class StaticJsonDataLayer implements DataLayer {
  * fetch and cache; it never computes or shapes data itself. */
 export class ApiDataLayer implements DataLayer {
   private cache = new Map<string, Promise<SymbolTimeframeData>>();
+  private quotesCache = new Map<string, Promise<Quote[]>>();
+  private symbolsCache: Promise<string[]> | null = null;
   private baseUrl: string;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
+  }
+
+  hasCachedSymbolData(symbol: string, timeframe: Timeframe): boolean {
+    return this.cache.has(`${symbol}:${timeframe}`);
   }
 
   private unreachable(status?: number): Error {
@@ -85,27 +133,43 @@ export class ApiDataLayer implements DataLayer {
     );
   }
 
-  async listSymbols(): Promise<string[]> {
-    let res: Response;
-    try {
-      res = await fetch(`${this.baseUrl}/api/symbols`);
-    } catch {
-      throw this.unreachable();
+  // Cached for the same reason getQuotes/getSymbolData are: React
+  // StrictMode double-invokes effects in dev (mount, cleanup, mount again),
+  // and without this every caller of listSymbols() during that second
+  // mount fired a second real /api/symbols request. One in-flight/settled
+  // promise shared by every caller for the life of the page.
+  listSymbols(): Promise<string[]> {
+    if (!this.symbolsCache) {
+      this.symbolsCache = fetch(`${this.baseUrl}/api/symbols`)
+        .catch(() => {
+          throw this.unreachable();
+        })
+        .then((res) => {
+          if (!res.ok) throw this.unreachable(res.status);
+          return res.json() as Promise<{ symbol: string }[]>;
+        })
+        .then((rows) => rows.map((r) => r.symbol));
     }
-    if (!res.ok) throw this.unreachable(res.status);
-    const rows: { symbol: string }[] = await res.json();
-    return rows.map((r) => r.symbol);
+    return this.symbolsCache;
   }
 
-  async getQuotes(timeframe: Timeframe): Promise<Quote[]> {
-    let res: Response;
-    try {
-      res = await fetch(`${this.baseUrl}/api/quotes?timeframe=${timeframe}`);
-    } catch {
-      throw this.unreachable();
+  // Cached by timeframe, same reasoning as listSymbols above - this is the
+  // exact endpoint that was observed firing twice on a single initial page
+  // load (see terminal/README.md#performance).
+  getQuotes(timeframe: Timeframe): Promise<Quote[]> {
+    let pending = this.quotesCache.get(timeframe);
+    if (!pending) {
+      pending = fetch(`${this.baseUrl}/api/quotes?timeframe=${timeframe}`)
+        .catch(() => {
+          throw this.unreachable();
+        })
+        .then((res) => {
+          if (!res.ok) throw this.unreachable(res.status);
+          return res.json() as Promise<Quote[]>;
+        });
+      this.quotesCache.set(timeframe, pending);
     }
-    if (!res.ok) throw this.unreachable(res.status);
-    return res.json();
+    return pending;
   }
 
   getSymbolData(symbol: string, timeframe: Timeframe): Promise<SymbolTimeframeData> {
@@ -124,6 +188,21 @@ export class ApiDataLayer implements DataLayer {
       this.cache.set(key, pending);
     }
     return pending;
+  }
+
+  // Not cached - see the interface doc comment. Reuses the same
+  // unreachable()/response-shape handling as getSymbolData; the only
+  // difference is the `limit` query param.
+  async getSymbolDataWindowed(symbol: string, timeframe: Timeframe, limit: number): Promise<SymbolTimeframeData> {
+    const url = `${this.baseUrl}/api/dataset?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}`;
+    let res: Response;
+    try {
+      res = await fetch(url);
+    } catch {
+      throw this.unreachable();
+    }
+    if (!res.ok) throw this.unreachable(res.status);
+    return res.json();
   }
 }
 
