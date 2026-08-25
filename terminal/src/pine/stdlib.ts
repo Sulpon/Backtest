@@ -282,8 +282,11 @@ export function buildStdlib(): StdlibTable {
         ctx.interp.registerLine(obj as unknown as Record<string, unknown> & { id: string });
         return obj;
       }),
-      delete: fn(["id"], (a) => {
-        if (isLine(a.id)) a.id.deleted = true;
+      delete: fn(["id"], (a, ctx) => {
+        if (isLine(a.id)) {
+          a.id.deleted = true;
+          ctx.interp.deleteLine(a.id.id);
+        }
         return NA;
       }),
       set_x1: fn(["id", "x"], (a) => setField(a.id, "x1", num(a.x))),
@@ -340,8 +343,11 @@ export function buildStdlib(): StdlibTable {
           return obj;
         }
       ),
-      delete: fn(["id"], (a) => {
-        if (isBox(a.id)) a.id.deleted = true;
+      delete: fn(["id"], (a, ctx) => {
+        if (isBox(a.id)) {
+          a.id.deleted = true;
+          ctx.interp.deleteBox(a.id.id);
+        }
         return NA;
       }),
       set_left: fn(["id", "left"], (a) => setField(a.id, "left", num(a.left))),
@@ -388,8 +394,11 @@ export function buildStdlib(): StdlibTable {
           return obj;
         }
       ),
-      delete: fn(["id"], (a) => {
-        if (isLabel(a.id)) a.id.deleted = true;
+      delete: fn(["id"], (a, ctx) => {
+        if (isLabel(a.id)) {
+          a.id.deleted = true;
+          ctx.interp.deleteLabel(a.id.id);
+        }
         return NA;
       }),
       set_x: fn(["id", "x"], (a) => setField(a.id, "x", num(a.x))),
@@ -414,9 +423,15 @@ export function buildStdlib(): StdlibTable {
       // first, so the label half was silently kept alive forever (up to
       // the max_labels_count cap), which is exactly what produced stacked,
       // never-cleared fib labels every time structure redrew.
-      delete_line: fn(["id", "label"], (a) => {
-        if (isLine(a.id)) a.id.deleted = true;
-        if (isLabel(a.label)) a.label.deleted = true;
+      delete_line: fn(["id", "label"], (a, ctx) => {
+        if (isLine(a.id)) {
+          a.id.deleted = true;
+          ctx.interp.deleteLine(a.id.id);
+        }
+        if (isLabel(a.label)) {
+          a.label.deleted = true;
+          ctx.interp.deleteLabel(a.label.id);
+        }
         return NA;
       }),
     },

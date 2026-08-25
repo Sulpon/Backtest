@@ -17,7 +17,7 @@ export interface Bar {
  * earlier written value - Pine's series semantics: `x[1]` always yields
  * the last known value of x, not "undefined" just because the assigning
  * line didn't happen to run on that exact bar. */
-class Binding {
+export class Binding {
   history: unknown[] = [];
   set(bar: number, value: unknown) {
     this.history[bar] = value;
@@ -83,7 +83,7 @@ interface ContinueSignal {
 }
 const BREAK: BreakSignal = { __signal: "break" };
 const CONTINUE: ContinueSignal = { __signal: "continue" };
-function isSignal(v: unknown): v is BreakSignal | ContinueSignal {
+export function isSignal(v: unknown): v is BreakSignal | ContinueSignal {
   return !!v && typeof v === "object" && "__signal" in (v as object);
 }
 
@@ -121,6 +121,16 @@ export interface Namespace {
   functions: Record<string, NamespaceFn>;
   constants: Record<string, unknown>;
 }
+
+/** What a Call AST node's callee statically resolves to - see
+ * Interpreter.callCache's doc comment for why this is safe to cache per
+ * node. */
+type CallResolution =
+  | { kind: "user"; name: string }
+  | { kind: "input"; property: string }
+  | { kind: "global"; fn: NamespaceFn }
+  | { kind: "callRaw"; fn: NamespaceFn }
+  | { kind: "namespace"; fn: NamespaceFn };
 
 export interface StdlibTable {
   namespaces: Record<string, Namespace>;
@@ -180,10 +190,34 @@ export class Interpreter {
   inputOverrides: Record<string, unknown>;
   inputDefs: InputDef[] = [];
   bar = 0;
-  private inputCallCounter = 0;
-  private inputCache: unknown[] = [];
-  private currentAssignTarget: string | null = null;
-  private allBindings: Binding[] = [];
+  /** @internal - widened for compiler.ts */ inputCallCounter = 0;
+  /** @internal */ inputCache: unknown[] = [];
+  /** @internal */ currentAssignTarget: string | null = null;
+  /** @internal */ allBindings: Binding[] = [];
+  /** Caches which Binding a given Ident/history-ref/Reassign AST node
+   * resolves to, keyed by the node object itself. Safe because Pine
+   * scoping in this interpreter is purely static: blocks (if/for bodies)
+   * share their enclosing scope rather than creating a new one, and a user
+   * function's scope is created once (in hoistFunctions) and reused for
+   * every call to it, including recursive ones - so for a GIVEN AST node,
+   * scope.resolve(name) returns the exact same Binding on every bar/call,
+   * forever. Without this, every identifier read re-walked the scope
+   * chain (a Map.get per ancestor scope) from scratch, every single bar -
+   * see the "Scope.resolve" line item in the Pine interpreter profiling
+   * report this was built from. Only successful resolutions are cached;
+   * an unresolved name throws immediately (aborting the run), so there's
+   * no second evaluation of that node to benefit from a cached miss. */
+  private identCache = new WeakMap<object, Binding>();
+  /** Caches which function a given Call AST node's callee resolves to
+   * (user function / input() / a stdlib global / a stdlib namespace
+   * function, raw or not) - same staticness argument as identCache:
+   * `this.functions` and `this.stdlib` never change after hoistFunctions
+   * runs, so a Call node's callee always resolves the same way. The one
+   * call shape that's genuinely dynamic - `obj.method(args)` method-call
+   * sugar, where the target namespace depends on the RUNTIME value's own
+   * __pine tag - is deliberately never cached; see evalCall's own comment
+   * at that branch. */
+  private callCache = new WeakMap<object, CallResolution>();
   lineRegistry = new Map<string, Record<string, unknown>>();
   boxRegistry = new Map<string, Record<string, unknown>>();
   labelRegistry = new Map<string, Record<string, unknown>>();
@@ -212,6 +246,29 @@ export class Interpreter {
   registerLabel(obj: Record<string, unknown> & { id: string }) {
     this.registerCapped(this.labelRegistry, obj.id, obj, this.maxLabels);
   }
+  /** Called by line.delete()/box.delete()/label.delete() (see stdlib.ts) in
+   * addition to setting `.deleted = true` on the object itself. A deleted
+   * object can never become undeleted and will never appear in output
+   * again (collectOutputs already filters `!x.deleted`), so there's no
+   * behavior difference between leaving it soft-deleted-but-registered
+   * until the max_lines_count/max_boxes_count/max_labels_count FIFO cap
+   * eventually evicts it, versus removing it right away - except that a
+   * script declaring a very large *_count (smc.pine sets max_lines_count/
+   * max_labels_count to 1,000,000 and max_boxes_count to 500,000, so the
+   * FIFO cap essentially never triggers) would otherwise accumulate
+   * hundreds of thousands of dead-but-still-registered entries over a long
+   * run, growing the live heap and the one-time collectOutputs() filter
+   * pass for no observable benefit. Measured on smc.pine over 100k bars:
+   * ~8% lower peak heap, byte-identical output. */
+  deleteLine(id: string) {
+    this.lineRegistry.delete(id);
+  }
+  deleteBox(id: string) {
+    this.boxRegistry.delete(id);
+  }
+  deleteLabel(id: string) {
+    this.labelRegistry.delete(id);
+  }
   plotSeries = new Map<string, { time: number; value: number }[]>();
   plotColors = new Map<string, string>();
   /** Keyed by id so a script recording the "same" trade again (e.g. a
@@ -219,8 +276,8 @@ export class Interpreter {
    * duplicates it - see PineTradeRecord's id-stability doc comment. */
   tradeRegistry = new Map<string, PineTradeRecord>();
   errors: string[] = [];
-  private nextObjId = 1;
-  private aborted = false;
+  /** @internal */ nextObjId = 1;
+  /** @internal */ aborted = false;
 
   recordTrade(trade: Omit<PineTradeRecord, "id"> & { boxes?: (PineBox | null)[] }) {
     const id = `t${trade.entryBar}_${trade.exitBar}`;
@@ -246,7 +303,7 @@ export class Interpreter {
     return "o" + this.nextObjId++;
   }
 
-  private declareBinding(scope: Scope, name: string): Binding {
+  /** @internal */ declareBinding(scope: Scope, name: string): Binding {
     const existing = scope.vars.get(name);
     if (existing) return existing;
     const b = scope.declare(name);
@@ -257,7 +314,7 @@ export class Interpreter {
   /** Registers every top-level function declaration before the bar loop
    * starts - a Pine function definition isn't "executed" per bar, only
    * calls to it are. */
-  private hoistFunctions(stmts: Stmt[]) {
+  /** @internal */ hoistFunctions(stmts: Stmt[]) {
     for (const s of stmts) {
       if (s.kind === "FunctionDecl") {
         const fnScope = new Scope(this.global);
@@ -300,7 +357,7 @@ export class Interpreter {
    * ONLY way to resolve a rarely-reassigned `var` binding, which degrades
    * to an O(bars) scan on every single read of it - O(bindings * bars^2)
    * across a whole run. This makes every read O(1) instead. */
-  private carryForward(bar: number) {
+  /** @internal */ carryForward(bar: number) {
     if (bar === 0) return;
     for (const binding of this.allBindings) {
       const h = binding.history;
@@ -308,7 +365,7 @@ export class Interpreter {
     }
   }
 
-  private collectOutputs(): PineOutputs {
+  /** @internal */ collectOutputs(): PineOutputs {
     return {
       lines: [...this.lineRegistry.values()].filter((l) => !l.deleted),
       boxes: [...this.boxRegistry.values()].filter((b) => !b.deleted),
@@ -324,7 +381,7 @@ export class Interpreter {
   }
 
   // ---- statement execution ----
-  private execBlock(stmts: Stmt[], scope: Scope): unknown {
+  /** @internal */ execBlock(stmts: Stmt[], scope: Scope): unknown {
     let last: unknown = NA;
     for (const s of stmts) {
       last = this.execStmt(s, scope);
@@ -333,7 +390,7 @@ export class Interpreter {
     return last;
   }
 
-  private execStmt(stmt: Stmt, scope: Scope): unknown {
+  /** @internal */ execStmt(stmt: Stmt, scope: Scope): unknown {
     switch (stmt.kind) {
       case "FunctionDecl":
         return NA; // hoisted already
@@ -352,8 +409,13 @@ export class Interpreter {
         return value;
       }
       case "Reassign": {
-        const binding = scope.resolve(stmt.name);
-        if (!binding) throw new PineRuntimeError(`assignment to undeclared variable '${stmt.name}'`);
+        let binding = this.identCache.get(stmt);
+        if (!binding) {
+          const resolved = scope.resolve(stmt.name);
+          if (!resolved) throw new PineRuntimeError(`assignment to undeclared variable '${stmt.name}'`);
+          binding = resolved;
+          this.identCache.set(stmt, binding);
+        }
         const value = this.evalExpr(stmt.expr, scope);
         binding.set(this.bar, value);
         return value;
@@ -440,7 +502,7 @@ export class Interpreter {
       case "ArrayLit":
         return { __pine: "array", items: expr.items.map((e) => this.evalExpr(e, scope)) };
       case "Ident":
-        return this.evalIdent(expr.name, scope);
+        return this.evalIdent(expr, scope);
       case "Member": {
         // barstate.* is dynamic (depends on the current bar), unlike every
         // other namespace access here which is a static constant.
@@ -475,9 +537,7 @@ export class Interpreter {
       }
       case "Unary": {
         const v = this.evalExpr(expr.expr, scope);
-        if (expr.op === "not") return isNa(v) ? NA : !toBool(v);
-        if (expr.op === "-") return isNa(v) ? NA : -toNum(v);
-        return v;
+        return applyUnaryOp(expr.op, v);
       }
       case "Binary":
         return this.evalBinary(expr.op, expr.left, expr.right, scope);
@@ -502,7 +562,8 @@ export class Interpreter {
     }
   }
 
-  private evalIdent(name: string, scope: Scope): unknown {
+  /** @internal */ evalIdent(expr: Extract<Expr, { kind: "Ident" }>, scope: Scope): unknown {
+    const name = expr.name;
     switch (name) {
       case "open":
         return this.bars[this.bar]?.open ?? NA;
@@ -523,8 +584,13 @@ export class Interpreter {
       case "na":
         return NA;
     }
+    const cached = this.identCache.get(expr);
+    if (cached) return cached.get(this.bar);
     const binding = scope.resolve(name);
-    if (binding) return binding.get(this.bar);
+    if (binding) {
+      this.identCache.set(expr, binding);
+      return binding.get(this.bar);
+    }
     // A bare namespace-as-value reference (e.g. passing `xloc.bar_time`'s
     // parent alone) never happens in these scripts; treat unknown
     // identifiers as script-level constants from stdlib globals if present.
@@ -533,7 +599,7 @@ export class Interpreter {
     throw new PineRuntimeError(`unknown identifier '${name}'`);
   }
 
-  private evalHistoryRef(objExpr: Expr, offset: number, scope: Scope): unknown {
+  /** @internal */ evalHistoryRef(objExpr: Expr, offset: number, scope: Scope): unknown {
     if (objExpr.kind === "Ident") {
       const name = objExpr.name;
       const target = this.bar - offset;
@@ -553,8 +619,13 @@ export class Interpreter {
         case "bar_index":
           return target;
       }
+      const cached = this.identCache.get(objExpr);
+      if (cached) return cached.get(target);
       const binding = scope.resolve(name);
-      if (binding) return binding.get(target);
+      if (binding) {
+        this.identCache.set(objExpr, binding);
+        return binding.get(target);
+      }
       throw new PineRuntimeError(`unknown identifier '${name}' in history reference`);
     }
     // History-reference on an arbitrary expression (rare in these scripts,
@@ -563,7 +634,7 @@ export class Interpreter {
     throw new PineRuntimeError("history-reference [] is only supported on a plain variable or OHLCV series");
   }
 
-  private evalBinary(op: string, leftE: Expr, rightE: Expr, scope: Scope): unknown {
+  /** @internal */ evalBinary(op: string, leftE: Expr, rightE: Expr, scope: Scope): unknown {
     if (op === "and") {
       const l = this.evalExpr(leftE, scope);
       if (!toBool(l)) return false;
@@ -576,50 +647,27 @@ export class Interpreter {
     }
     const l = this.evalExpr(leftE, scope);
     const r = this.evalExpr(rightE, scope);
-    if (op === "==") return pineEquals(l, r);
-    if (op === "!=") return !pineEquals(l, r);
-    if (op === "+") {
-      if (typeof l === "string" || typeof r === "string") return (isNa(l) ? "" : String(l)) + (isNa(r) ? "" : String(r));
-      if (isNa(l) || isNa(r)) return NA;
-      return toNum(l) + toNum(r);
-    }
-    if (isNa(l) || isNa(r)) return NA;
-    const ln = toNum(l);
-    const rn = toNum(r);
-    switch (op) {
-      case "-":
-        return ln - rn;
-      case "*":
-        return ln * rn;
-      case "/":
-        return ln / rn;
-      case "%":
-        return ln % rn;
-      case "<":
-        return ln < rn;
-      case "<=":
-        return ln <= rn;
-      case ">":
-        return ln > rn;
-      case ">=":
-        return ln >= rn;
-      default:
-        throw new PineRuntimeError(`unknown operator '${op}'`);
-    }
+    return applyBinaryOp(op, l, r);
   }
 
-  private evalCall(expr: Extract<Expr, { kind: "Call" }>, scope: Scope): unknown {
+  /** @internal */ evalCall(expr: Extract<Expr, { kind: "Call" }>, scope: Scope): unknown {
     const { callee, args } = expr;
+
+    const cached = this.callCache.get(expr);
+    if (cached) return this.dispatchCall(cached, args, scope);
 
     if (callee.kind === "Ident") {
       if (this.functions.has(callee.name)) {
+        this.callCache.set(expr, { kind: "user", name: callee.name });
         return this.callUserFunction(callee.name, args, scope);
       }
       if (INPUT_FN_NAMES.has(callee.name)) {
+        this.callCache.set(expr, { kind: "input", property: "generic" });
         return this.callInput("generic", args, scope);
       }
       const g = this.stdlib.globals[callee.name];
       if (g) {
+        this.callCache.set(expr, { kind: "global", fn: g });
         const resolved = this.resolveArgs(g.params, args, scope);
         return g.call(resolved, this.ctx());
       }
@@ -629,6 +677,7 @@ export class Interpreter {
     if (callee.kind === "Member") {
       const { object, property } = callee;
       if (object.kind === "Ident" && object.name === "input") {
+        this.callCache.set(expr, { kind: "input", property });
         return this.callInput(property, args, scope);
       }
       if (object.kind === "Ident" && this.stdlib.namespaces[object.name]) {
@@ -636,14 +685,21 @@ export class Interpreter {
         const fn = ns.functions[property];
         if (!fn) throw new PineRuntimeError(`unknown function '${object.name}.${property}'`);
         if (fn.callRaw) {
+          this.callCache.set(expr, { kind: "callRaw", fn });
           const seriesAt = (e: Expr, offset: number) => (offset === 0 ? this.evalExpr(e, scope) : this.evalHistoryRef(e, offset, scope));
           return fn.callRaw(args, { ...this.ctx(), scope, seriesAt });
         }
+        this.callCache.set(expr, { kind: "namespace", fn });
         const resolved = this.resolveArgs(fn.params, args, scope);
         return fn.call(resolved, this.ctx());
       }
       // Method-call sugar: obj.method(args) where obj is a runtime value
       // tagged "line"/"box"/"label", equivalent to namespace.method(obj, args).
+      // Deliberately NEVER cached (unlike every branch above): which
+      // namespace this dispatches to depends on the RUNTIME value's own
+      // __pine tag, which this same AST node could in principle see change
+      // across bars - nothing here is statically fixed the way a plain
+      // function/namespace-member callee is.
       const objVal = this.evalExpr(object, scope) as { __pine?: string } | null;
       const tag = objVal && typeof objVal === "object" ? objVal.__pine : undefined;
       const nsName = tag ? this.stdlib.methodNamespaceForTag[tag] : undefined;
@@ -658,7 +714,30 @@ export class Interpreter {
     throw new PineRuntimeError("uncallable expression: " + JSON.stringify(callee).slice(0, 200));
   }
 
-  private callInput(kindHint: string, args: Arg[], scope: Scope): unknown {
+  /** Executes an already-resolved call - the exact same logic each branch
+   * of evalCall runs on a cache miss, just without re-deriving `res`. */
+  /** @internal */ dispatchCall(res: CallResolution, args: Arg[], scope: Scope): unknown {
+    switch (res.kind) {
+      case "user":
+        return this.callUserFunction(res.name, args, scope);
+      case "input":
+        return this.callInput(res.property, args, scope);
+      case "global": {
+        const resolved = this.resolveArgs(res.fn.params, args, scope);
+        return res.fn.call(resolved, this.ctx());
+      }
+      case "callRaw": {
+        const seriesAt = (e: Expr, offset: number) => (offset === 0 ? this.evalExpr(e, scope) : this.evalHistoryRef(e, offset, scope));
+        return res.fn.callRaw!(args, { ...this.ctx(), scope, seriesAt });
+      }
+      case "namespace": {
+        const resolved = this.resolveArgs(res.fn.params, args, scope);
+        return res.fn.call(resolved, this.ctx());
+      }
+    }
+  }
+
+  /** @internal */ callInput(kindHint: string, args: Arg[], scope: Scope): unknown {
     const idx = this.inputCallCounter++;
     if (this.bar > 0) {
       return this.inputCache[idx];
@@ -694,7 +773,7 @@ export class Interpreter {
     return value;
   }
 
-  private callUserFunction(name: string, args: Arg[], callerScope: Scope): unknown {
+  /** @internal */ callUserFunction(name: string, args: Arg[], callerScope: Scope): unknown {
     const fn = this.functions.get(name)!;
     // Evaluate arguments in the CALLER's scope, then bind into the
     // function's own persistent scope (shared across all calls/bars - see
@@ -714,8 +793,22 @@ export class Interpreter {
     return isSignal(result) ? NA : result;
   }
 
-  private resolveArgs(paramNames: string[], args: Arg[], scope: Scope): ResolvedArgs {
+  /** @internal */ resolveArgs(paramNames: string[], args: Arg[], scope: Scope): ResolvedArgs {
     const out: ResolvedArgs = {};
+    // Pre-declare every param name, in its own fixed order, before
+    // evaluating any argument - gives V8 a single stable hidden class per
+    // stdlib function signature instead of building up whatever shape the
+    // actually-supplied args happen to produce. This same resolveArgs body
+    // runs for every stdlib call site in the script (ta.*, math.*, array.*,
+    // ...), each with a different, fixed paramNames array called
+    // repeatedly across every bar - without this, property writes into
+    // `out` were megamorphic from V8's point of view. A param not actually
+    // supplied below simply keeps the `undefined` set here, identical to
+    // what reading an absent key already returned - this changes
+    // allocation/property-access performance only, never an observable
+    // value (nothing in this codebase checks key presence on a
+    // ResolvedArgs object, only the value itself).
+    for (const p of paramNames) out[p] = undefined;
     let positional = 0;
     for (const a of args) {
       const value = this.evalExpr(a.value, scope);
@@ -725,8 +818,10 @@ export class Interpreter {
     return out;
   }
 
-  private resolveArgsWithLeadingValue(paramNames: string[], leading: unknown, args: Arg[], scope: Scope): ResolvedArgs {
+  /** @internal */ resolveArgsWithLeadingValue(paramNames: string[], leading: unknown, args: Arg[], scope: Scope): ResolvedArgs {
     const out: ResolvedArgs = {};
+    // Same hidden-class-stability reasoning as resolveArgs above.
+    for (const p of paramNames) out[p] = undefined;
     if (paramNames[0]) out[paramNames[0]] = leading;
     let positional = 1;
     for (const a of args) {
@@ -742,22 +837,71 @@ export class Interpreter {
   }
 }
 
-const INPUT_FN_NAMES = new Set(["input"]);
+export const INPUT_FN_NAMES = new Set(["input"]);
 
-function toBool(v: unknown): boolean {
+/** @internal - exported for compiler.ts, which needs the exact same
+ * truthiness/coercion/equality rules the interpreter uses. */
+export function toBool(v: unknown): boolean {
   if (isNa(v)) return false;
   return !!v;
 }
-function toNum(v: unknown): number {
+export function toNum(v: unknown): number {
   if (isNa(v)) return NaN;
   return typeof v === "number" ? v : Number(v);
 }
 export function isPineArray(v: unknown): v is { __pine: "array"; items: unknown[] } {
   return !!v && typeof v === "object" && (v as { __pine?: string }).__pine === "array";
 }
-function pineEquals(a: unknown, b: unknown): boolean {
+export function pineEquals(a: unknown, b: unknown): boolean {
   if (isNa(a) && isNa(b)) return true;
   if (isNa(a) || isNa(b)) return false;
   if (typeof a === "object" && typeof b === "object") return a === b;
   return a === b;
+}
+
+/** The non-short-circuit half of Binary evaluation: everything from `==`
+ * onward, given BOTH operand values already evaluated. Split out of
+ * Interpreter.evalBinary so compiler.ts's compileBinary can share the
+ * EXACT same operator semantics instead of re-implementing them - "and"/
+ * "or" stay in evalBinary itself (and get their own compiled form) since
+ * they're short-circuiting and can't be expressed as "compute from two
+ * already-evaluated values". */
+export function applyBinaryOp(op: string, l: unknown, r: unknown): unknown {
+  if (op === "==") return pineEquals(l, r);
+  if (op === "!=") return !pineEquals(l, r);
+  if (op === "+") {
+    if (typeof l === "string" || typeof r === "string") return (isNa(l) ? "" : String(l)) + (isNa(r) ? "" : String(r));
+    if (isNa(l) || isNa(r)) return NA;
+    return toNum(l) + toNum(r);
+  }
+  if (isNa(l) || isNa(r)) return NA;
+  const ln = toNum(l);
+  const rn = toNum(r);
+  switch (op) {
+    case "-":
+      return ln - rn;
+    case "*":
+      return ln * rn;
+    case "/":
+      return ln / rn;
+    case "%":
+      return ln % rn;
+    case "<":
+      return ln < rn;
+    case "<=":
+      return ln <= rn;
+    case ">":
+      return ln > rn;
+    case ">=":
+      return ln >= rn;
+    default:
+      throw new PineRuntimeError(`unknown operator '${op}'`);
+  }
+}
+
+/** Same reasoning as applyBinaryOp, for Unary. */
+export function applyUnaryOp(op: string, v: unknown): unknown {
+  if (op === "not") return isNa(v) ? NA : !toBool(v);
+  if (op === "-") return isNa(v) ? NA : -toNum(v);
+  return v;
 }
