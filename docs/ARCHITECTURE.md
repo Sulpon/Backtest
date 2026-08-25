@@ -312,12 +312,25 @@ for now).
 `run_backtest()` (`backend/app/structure_engine.py`) is **one specific,
 hardcoded SMC/fib-OTE strategy**: swing/BOS detection → daily-bias A/B/C/D
 tagging (resampled from the same 1h file) → fib leg anchoring off the
-latest impulse → OTE entry with a fixed `RR_RATIO = 2.45` → SL at the leg
-extreme. It runs against **EURUSD 1h only**, once, at `build_db.py` time,
-and its output is baked into `data.duckdb`'s `order_blocks`/`trades`/`stats`
-tables. There is no parameterization, no other symbol/timeframe, and no way
-to backtest a different strategy without editing this function and
-rerunning `build_db.py`.
+latest impulse → OTE entry → SL at the leg extreme. It runs against
+**EURUSD 1h only**, once, at `build_db.py` time, and its output is baked
+into `data.duckdb`'s `order_blocks`/`trades`/`stats` tables.
+
+As of Phase 3 Task 2, `run_backtest(csv_path, config: BacktestConfig |
+None = None)` accepts an optional `BacktestConfig(rr_ratio: float = 2.45)`
+— the *only* constant parameterized so far, per that phase's recorded
+Decision 1. `build_db.py` calls it with no `config` argument, so its
+output is unchanged (proven byte-for-byte by
+`tests/test_backtest_regression.py`, written against the pre-Phase-3
+signature). Every other constant (`DAILY_SWING_LEN`, `RETRACE_THRESHOLD`,
+`SWING_LEN`, `MAX_IMPULSE_BARS`, `USE_LINE_SOURCE`, `FIB_USE_BODY`, the
+inline `0.71` OTE anchor, the liquidity `tolerance_pct`, the fixed `-1.0`
+loss R) is still hardcoded. There is still no other symbol/timeframe, no
+on-demand execution path, and no way to backtest a genuinely different
+strategy without editing this function and rerunning `build_db.py` — see
+`ROADMAP.md`'s Phase 3 for the remaining, larger tasks and the explicit
+decisions already recorded there scoping what "any symbol/timeframe" will
+and won't mean.
 
 Separately, the Pine interpreter supports a **non-standard `backtest.*`
 namespace** (`stdlib.ts`, `namespaces.backtest.recordTrade`) — not real

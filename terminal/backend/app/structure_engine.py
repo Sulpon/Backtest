@@ -9,9 +9,25 @@ only the I/O (argument in, return value out, instead of a hardcoded path and
 a print/json.dump) changed, specifically so this port couldn't silently
 change backtest results.
 """
+from dataclasses import dataclass
+
 import pandas as pd
 import numpy as np
 from collections import defaultdict
+
+
+@dataclass(frozen=True)
+class BacktestConfig:
+    """Phase 3, Decision 1 (ROADMAP.md): only RR_RATIO is parameterized for
+    now. Every other constant in this file (DAILY_SWING_LEN,
+    RETRACE_THRESHOLD, SWING_LEN, MAX_IMPULSE_BARS, USE_LINE_SOURCE,
+    FIB_USE_BODY, the inline 0.71 OTE anchor, the liquidity tolerance_pct,
+    the fixed -1.0 loss R) stays hardcoded and untouched - do not add fields
+    here for those without a separate, explicit decision. Default
+    (rr_ratio=2.45) is the exact value run_backtest() has always used, so
+    that run_backtest(csv_path) with no config argument stays byte-for-byte
+    identical to the pre-Phase-3 engine."""
+    rr_ratio: float = 2.45
 
 
 def compute_pivots(src, length):
@@ -201,7 +217,9 @@ def compute_structure(csv_path: str, swing_len: int, use_line_source: bool) -> d
     }
 
 
-def run_backtest(csv_path: str) -> dict:
+def run_backtest(csv_path: str, config: BacktestConfig | None = None) -> dict:
+    if config is None:
+        config = BacktestConfig()
     # -----------------------------------------------------------------------
     # Load 1H data
     # -----------------------------------------------------------------------
@@ -357,7 +375,7 @@ def run_backtest(csv_path: str) -> dict:
     USE_LINE_SOURCE = True
     MAX_IMPULSE_BARS = 150
     FIB_USE_BODY = True
-    RR_RATIO = 2.45
+    RR_RATIO = config.rr_ratio
 
     src_high = df['close'].values if USE_LINE_SOURCE else df['high'].values
     src_low = df['close'].values if USE_LINE_SOURCE else df['low'].values

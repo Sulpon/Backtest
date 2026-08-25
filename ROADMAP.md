@@ -127,8 +127,25 @@ for why that matters).
 
 **Status: In progress — decisions recorded 2026-08-26; Task 1 (regression
 baseline harness) complete and committed 2026-08-26. Task 2
-(`BacktestConfig`/`RR_RATIO` extraction, per Decision 1 below) is next,
-unblocked. See "Decisions" below before starting any further task.**
+(`BacktestConfig`/`RR_RATIO` extraction) complete 2026-08-26 — see below.
+See "Decisions" below before starting any further task.**
+
+**Task 2 — done, 2026-08-26.** Extracted `RR_RATIO` into a
+`@dataclass(frozen=True) class BacktestConfig` (single field,
+`rr_ratio: float = 2.45`) in `structure_engine.py`; `run_backtest()`'s
+signature changed to `run_backtest(csv_path, config: BacktestConfig | None
+= None)`, defaulting internally to `BacktestConfig()`. Every other constant
+named in Decision 1 stays untouched. `build_db.py` has zero diff — it still
+calls `run_backtest(csv_path)` with no second argument. Verification: the
+full `test_backtest_regression.py` suite (7 tests, written against the OLD
+signature) passes with zero modifications to its assertions, proving
+`config=None` is byte-identical to the pre-refactor engine; a new
+`tests/test_backtest_config.py` proves `BacktestConfig(rr_ratio=1.5)`
+produces a distinct, causally-explainable result (trade count unchanged,
+but TP prices, per-trade R on wins, `stats["rr"]`, `stats["breakevenWr"]`,
+and win rate all move with the parameter, and every winning trade's
+recorded R equals the configured ratio, never the old hardcoded 2.45).
+Full backend suite: 86/86 passing (was 85/85 after Task 1).
 
 **Task 1 — done, 2026-08-26.** Added
 `terminal/backend/tests/test_backtest_regression.py` +
