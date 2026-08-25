@@ -24,6 +24,8 @@ export function TopToolbar() {
   const setPendingRR = useUiStore((s) => s.setPendingRR);
   const analysisHubOpen = useUiStore((s) => s.analysisHubOpen);
   const setAnalysisHubOpen = useUiStore((s) => s.setAnalysisHubOpen);
+  const marketStructureDatasetOpen = useUiStore((s) => s.marketStructureDatasetOpen);
+  const setMarketStructureDatasetOpen = useUiStore((s) => s.setMarketStructureDatasetOpen);
   const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
@@ -257,6 +259,14 @@ export function TopToolbar() {
           onClick={() => setAnalysisHubOpen(!analysisHubOpen)}
         >
           <span className="tb-glyph">Ω</span>
+        </button>
+        <button
+          type="button"
+          className={`tb-btn${marketStructureDatasetOpen ? " active" : ""}`}
+          title="Market Structure Dataset - your logged BOS/CHoCH drawings"
+          onClick={() => setMarketStructureDatasetOpen(!marketStructureDatasetOpen)}
+        >
+          <span className="tb-glyph">M</span>
         </button>
         <button type="button" className="tb-btn" title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} onClick={toggleTheme}>
           {theme === "dark" ? "☾" : "☼"}

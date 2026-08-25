@@ -366,7 +366,10 @@ const rectangle: DrawingKind = {
   },
 };
 
-const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.71, 0.786, 1.0];
+// Exported so the market-structure logger (src/marketStructure/) can log
+// the exact same levels it renders, instead of duplicating this list and
+// risking the two silently drifting apart.
+export const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.71, 0.786, 1.0];
 
 const fibretracement: DrawingKind = {
   type: "fibretracement",
@@ -479,6 +482,50 @@ function positionKind(type: "long" | "short"): DrawingKind {
   };
 }
 
+// Market-structure markers (see src/marketStructure/) - a 2-point line, same
+// interaction as Trend Line, plus a text label centered above the
+// midpoint. Color is per TYPE only (BOS vs CHoCH), matching smc.pine's own
+// convention of one color per structure type regardless of direction -
+// direction is unambiguous from the label text itself (the arrow), not
+// from color, so there's no risk of a bull/bear color scheme clashing with
+// a user's own chart theme or colorblindness.
+function marketStructureKind(type: DrawingType, toolLabel: string, displayLabel: string, color: string): DrawingKind {
+  return {
+    type,
+    label: toolLabel,
+    pointCount: 2,
+    defaultStyle: { color, lineWidth: 2 },
+    render(ctx, scale, obj) {
+      const [p1, p2] = obj.points;
+      const a = scale.toPx(p1.time, p1.price);
+      const b = scale.toPx(p2.time, p2.price);
+      if (!a || !b) return;
+      ctx.strokeStyle = obj.style.color;
+      ctx.lineWidth = obj.style.lineWidth;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      const midX = (a.x + b.x) / 2;
+      const midY = (a.y + b.y) / 2;
+      ctx.fillStyle = obj.style.color;
+      ctx.font = "bold 11px -apple-system, 'Segoe UI', Arial, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText(displayLabel, midX, midY - 8);
+      ctx.textAlign = "left";
+    },
+    hitTest(scale, obj, x, y) {
+      const [p1, p2] = obj.points;
+      const a = scale.toPx(p1.time, p1.price);
+      const b = scale.toPx(p2.time, p2.price);
+      if (!a || !b) return false;
+      return distToSegment(x, y, a.x, a.y, b.x, b.y) <= HIT_PX;
+    },
+    handleIndices: () => [0, 1],
+  };
+}
+
 export const DRAWING_KINDS: Record<DrawingType, DrawingKind> = {
   trendline,
   hline,
@@ -488,6 +535,10 @@ export const DRAWING_KINDS: Record<DrawingType, DrawingKind> = {
   fibretracement,
   long: positionKind("long"),
   short: positionKind("short"),
+  bosbull: marketStructureKind("bosbull", "Bullish BOS", "BOS ↑", "#42a5f5"),
+  bosbear: marketStructureKind("bosbear", "Bearish BOS", "BOS ↓", "#42a5f5"),
+  chochbull: marketStructureKind("chochbull", "Bullish CHoCH", "CHoCH ↑", "#e0a64c"),
+  chochbear: marketStructureKind("chochbear", "Bearish CHoCH", "CHoCH ↓", "#e0a64c"),
 };
 
 export const HANDLE_RADIUS = 4;

@@ -10,6 +10,7 @@ import { useUiStore } from "../workspace/uiStore";
 import { useSettingsStore } from "../settings/settingsStore";
 import { getModifierKeys, setActivePaneKey, getActivePaneKey } from "./interactionState";
 import { StyleInspector } from "./StyleInspector";
+import { MarketStructureInspector } from "../marketStructure/MarketStructureInspector";
 import { DrawingContextMenu, type ContextMenuState } from "./DrawingContextMenu";
 import "./DrawingLayer.css";
 
@@ -506,6 +507,7 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
       {selectedIds.length > 0 && (
         <StyleInspector paneKey={paneKey} selectedIds={selectedIds} onDeselect={() => select(null)} />
       )}
+      <MarketStructureInspector paneKey={paneKey} selectedIds={selectedIds} />
       {menu && (
         <DrawingContextMenu
           state={menu}

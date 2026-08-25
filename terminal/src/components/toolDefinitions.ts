@@ -38,10 +38,18 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   fibretracement: "Measure retracement levels between a swing high and low",
   long: "Plan a long entry with stop-loss and R:R target",
   short: "Plan a short entry with stop-loss and R:R target",
+  bosbull: "Mark a bullish Break of Structure you identified",
+  bosbear: "Mark a bearish Break of Structure you identified",
+  chochbull: "Mark a bullish Change of Character you identified",
+  chochbear: "Mark a bearish Change of Character you identified",
 };
 
-// Deliberately no SMC group here - SMC tools are analysis, not drawings
-// (architecture doc, Section 05), and live in the Analysis hub instead.
+// The automatic SMC overlay toggles in the Analysis hub (architecture doc,
+// Section 05) are a DIFFERENT thing from this group: those render whatever
+// the backend/Pine engine computed. These 4 tools are manual drawings you
+// place yourself - every one is logged verbatim into the market-structure
+// dataset (see src/marketStructure/) as your own decision, not compared
+// against or replaced by the automatic overlays in any way.
 export const TOOL_GROUPS: ToolGroup[] = [
   {
     id: "navigation",
@@ -103,6 +111,16 @@ export const TOOL_GROUPS: ToolGroup[] = [
     id: "risk",
     label: "Risk Tools",
     tools: [t("long", "Long Position", true), t("short", "Short Position", true), t("riskreward", "Risk/Reward")],
+  },
+  {
+    id: "marketstructure",
+    label: "Market Structure",
+    tools: [
+      t("bosbull", "Bullish BOS", true),
+      t("bosbear", "Bearish BOS", true),
+      t("chochbull", "Bullish CHoCH", true),
+      t("chochbear", "Bearish CHoCH", true),
+    ],
   },
   {
     id: "measurement",

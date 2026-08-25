@@ -3,6 +3,7 @@ import { LeftToolRail } from "./LeftToolRail";
 import { DockviewRoot } from "./DockviewRoot";
 import { StatusBar } from "./StatusBar";
 import { AnalysisHub } from "../analysis/AnalysisHub";
+import { MarketStructureDatasetPanel } from "../marketStructure/MarketStructureDatasetPanel";
 import { PineSettingsDialog } from "../pine/PineSettingsDialog";
 import { CommandPalette } from "../commandPalette/CommandPalette";
 import { useCommandPaletteHotkey } from "../commandPalette/useCommandPaletteHotkey";
@@ -28,6 +29,7 @@ export function AppShell() {
       </div>
       <StatusBar />
       <AnalysisHub />
+      <MarketStructureDatasetPanel />
       <PineSettingsDialog />
       <CommandPalette />
       <SettingsPanel />

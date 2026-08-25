@@ -22,6 +22,7 @@ interface UiStore {
    * each time. Session-only, same reasoning as activeToolId itself. */
   toolLocked: boolean;
   analysisHubOpen: boolean;
+  marketStructureDatasetOpen: boolean;
   /** Set by double-clicking a line/box/label a Pine indicator drew (see
    * PineIndicatorLayer) - tells the Analysis hub's Pine tab to open
    * straight to that indicator's editor instead of wherever the user last
@@ -41,6 +42,7 @@ interface UiStore {
   toggleMagnet: () => void;
   toggleToolLock: () => void;
   setAnalysisHubOpen: (open: boolean) => void;
+  setMarketStructureDatasetOpen: (open: boolean) => void;
   setPineEditTarget: (id: string | null) => void;
   setCommandPaletteOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -54,6 +56,7 @@ export const useUiStore = create<UiStore>((set) => ({
   magnetEnabled: false,
   toolLocked: false,
   analysisHubOpen: false,
+  marketStructureDatasetOpen: false,
   pineEditTarget: null,
   commandPaletteOpen: false,
   settingsOpen: false,
@@ -64,6 +67,7 @@ export const useUiStore = create<UiStore>((set) => ({
   toggleMagnet: () => set((s) => ({ magnetEnabled: !s.magnetEnabled })),
   toggleToolLock: () => set((s) => ({ toolLocked: !s.toolLocked })),
   setAnalysisHubOpen: (analysisHubOpen) => set({ analysisHubOpen }),
+  setMarketStructureDatasetOpen: (marketStructureDatasetOpen) => set({ marketStructureDatasetOpen }),
   setPineEditTarget: (pineEditTarget) => set({ pineEditTarget }),
   setCommandPaletteOpen: (commandPaletteOpen) => set({ commandPaletteOpen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),

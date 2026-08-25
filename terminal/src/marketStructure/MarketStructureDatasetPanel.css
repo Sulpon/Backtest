@@ -1,0 +1,101 @@
+.msd-modal {
+  width: 920px;
+  height: 560px;
+}
+
+.msd-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.msd-filter {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.msd-filter select {
+  font-size: 11px;
+  padding: 3px 4px;
+}
+
+.msd-spacer {
+  flex: 1;
+}
+
+.msd-count {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.msd-export-btn {
+  font-size: 11px;
+  padding: 4px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.msd-export-btn:hover {
+  border-color: var(--accent);
+}
+
+.msd-table-wrap {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.msd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.msd-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+  z-index: 1;
+}
+
+.msd-table th,
+.msd-table td {
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+
+.msd-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.msd-sortable:hover {
+  color: var(--text);
+}
+
+.msd-sort-arrow {
+  color: var(--accent);
+}
+
+.msd-row-deleted {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.msd-empty {
+  text-align: center;
+  color: var(--text-faint);
+  padding: 24px 0;
+}

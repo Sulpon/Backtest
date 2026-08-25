@@ -1,0 +1,110 @@
+.ms-inspector {
+  position: absolute;
+  top: 48px;
+  right: 8px;
+  z-index: 5;
+  width: 260px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  padding: 8px 10px;
+  pointer-events: auto;
+}
+
+.ms-inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ms-inspector-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ms-copy-btn {
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.ms-copy-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.ms-inspector-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  font-size: 10.5px;
+}
+
+.ms-row-label {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.ms-row-value {
+  color: var(--text);
+  text-align: right;
+  font-family: "IBM Plex Mono", monospace;
+  word-break: break-word;
+}
+
+.ms-note-label {
+  display: block;
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.ms-note-input {
+  width: 100%;
+  margin-top: 3px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-size: 10.5px;
+  padding: 4px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.ms-classification {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.ms-class-btn {
+  flex: 1;
+  font-size: 10px;
+  padding: 3px 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  text-transform: capitalize;
+}
+
+.ms-class-btn:hover {
+  background: var(--bg-hover);
+}
+
+.ms-class-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}

@@ -14,6 +14,7 @@ const GROUP_GLYPH: Record<string, string> = {
   risk: "R",
   measurement: "↔",
   brushes: "✎",
+  marketstructure: "M",
 };
 
 export const PLACEMENT_HINTS: Record<string, string> = {
