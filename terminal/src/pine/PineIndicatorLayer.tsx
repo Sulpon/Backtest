@@ -31,7 +31,7 @@ const HIT_PX = 6;
  * indices past the end of the array (rare - a script referencing a
  * near-future bar) extrapolate using the dataset's own average bar
  * spacing rather than failing to render. */
-function barIndexToTime(idx: number, bars: CandleBar[], avgInterval: number): number {
+export function barIndexToTime(idx: number, bars: CandleBar[], avgInterval: number): number {
   if (bars.length === 0 || !Number.isFinite(idx)) return 0;
   // Real Pine tolerates a fractional bar_index (some scripts compute one,
   // e.g. averaging two box edges without rounding) by interpolating -
@@ -42,7 +42,7 @@ function barIndexToTime(idx: number, bars: CandleBar[], avgInterval: number): nu
   return bars[0].time + i * avgInterval;
 }
 
-function avgBarInterval(bars: CandleBar[]): number {
+export function avgBarInterval(bars: CandleBar[]): number {
   if (bars.length < 2) return 3600;
   return (bars[bars.length - 1].time - bars[0].time) / (bars.length - 1);
 }

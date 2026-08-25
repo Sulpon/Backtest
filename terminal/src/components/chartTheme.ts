@@ -74,3 +74,11 @@ export function candleOptions(theme: ThemeName) {
 export function paletteColor(theme: ThemeName, key: "bull" | "bear" | "highlight"): string {
   return PALETTE[theme][key];
 }
+
+/** The exact panel background color lightweight-charts paints itself with
+ * (see chartOptions' layout.background above) - used to letterbox chart
+ * snapshots (see chartSnapshot.ts) so a non-16:9 chart doesn't get bars of
+ * a jarring, unthemed color around it. */
+export function panelBackgroundColor(theme: ThemeName): string {
+  return PALETTE[theme].bgPanel;
+}

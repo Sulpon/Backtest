@@ -12,3 +12,6 @@ XAUUSD*.csv
 # OS/editor cruft
 .DS_Store
 Thumbs.db
+
+.vercel
+.env*

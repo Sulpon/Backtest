@@ -1,13 +1,21 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { dataLayer } from "../../data/DataLayer";
-import type { CandleBar, Trade } from "../../data/types";
+import type { SymbolTimeframeData, Timeframe } from "../../data/types";
 import { useActiveWorkspace } from "../../workspace/workspaceStore";
 import { useReplayStore } from "../../replay/replayStore";
 import { useJournalStore, useJournalEntry, tradeKey } from "../../journal/journalStore";
 import { usePineIndicators } from "../../pine/usePineIndicators";
-import { collectPineTrades } from "../../pine/pineTradesAdapter";
+import { collectPineTradesWithSource } from "../../pine/pineTradesAdapter";
 import { usePineTradeOverridesStore } from "../../pine/pineTradeOverridesStore";
 import { usePineIndicatorStore } from "../../pine/pineIndicatorStore";
+import { sendTradeReview, type TradeReviewPayload } from "../../telegram/telegramApi";
+import {
+  buildTradeReviewPayload,
+  buildPineTradeReviewPayload,
+  computeSnapshotWindow,
+  computePineSnapshotWindow,
+} from "../../telegram/tradeReviewPayload";
+import { useChartRegistry, findChartForSymbol, type ChartSnapshotWindow } from "../chartRegistry";
 import "./panels.css";
 
 const STARS = [1, 2, 3, 4, 5];
@@ -85,11 +93,131 @@ function JournalEditor({ tradeKey: key }: { tradeKey: string }) {
   );
 }
 
+type SendState = "idle" | "sending" | "sent" | "failed";
+
+interface TelegramButtonProps {
+  symbol: string;
+  timeframe: Timeframe;
+  payload: TradeReviewPayload;
+  snapshotWindow: ChartSnapshotWindow;
+}
+
+// Works for both backend and Pine-indicator trades - the caller (see
+// TradesPanel below) builds `payload`/`snapshotWindow` differently
+// depending on source (buildTradeReviewPayload/computeSnapshotWindow vs
+// buildPineTradeReviewPayload/computePineSnapshotWindow - a Pine trade's
+// entryBar/exitBar index that indicator's own windowedBars, never the full
+// dataset), but this component itself doesn't need to know which.
+//
+// Milestone 4 - automatically tries to capture a chart snapshot (same
+// mechanism as the standalone "Preview Snapshot" button below) before
+// sending, so the review arrives as a photo with YES/NO/PARTIALLY inline
+// buttons attached. Silently sends WITHOUT a snapshot (falls back to
+// Milestone 2's plain text) if no chart pane showing this exact
+// symbol/timeframe is currently open - a missing snapshot is never a
+// reason to fail the whole send.
+function SendToTelegramButton({ symbol, timeframe, payload, snapshotWindow }: TelegramButtonProps) {
+  const panes = useChartRegistry((s) => s.panes);
+  const [state, setState] = useState<SendState>("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleClick() {
+    setState("sending");
+    setError(null);
+    try {
+      const outgoing = { ...payload };
+      const chart = findChartForSymbol(panes, symbol, timeframe);
+      if (chart) {
+        try {
+          outgoing.snapshotDataUrl = await chart.takeSnapshot(snapshotWindow);
+        } catch {
+          // no snapshot this time - still send the review itself below
+        }
+      }
+      const result = await sendTradeReview(outgoing);
+      if (result.ok) {
+        setState("sent");
+      } else {
+        setState("failed");
+        setError(result.error);
+      }
+    } catch (e) {
+      setState("failed");
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <div className="jr-telegram">
+      <button type="button" className="hk-key" onClick={handleClick} disabled={state === "sending"}>
+        {state === "sending" ? "Sending…" : "Send to Telegram"}
+      </button>
+      {state === "sent" && <span className="pos">✅ Sent</span>}
+      {state === "failed" && <span className="neg">❌ {error}</span>}
+    </div>
+  );
+}
+
+type SnapshotState = "idle" | "capturing" | "ready" | "failed";
+
+// Milestone 3 - proves the actual chart-snapshot pipeline (chartRegistry.ts
+// + chartSnapshot.ts) end to end before Milestone 4 wires it into the
+// Telegram send itself: find a mounted chart pane showing this trade's
+// symbol/timeframe, frame it around the trade, screenshot + composite,
+// show the result inline. Requires a chart pane actually showing this
+// exact symbol/timeframe to be open somewhere in the workspace (any
+// dockview pane, not necessarily "chart-1") - this reuses that pane's own
+// live rendering rather than building a second one, per the original
+// spec's "PLATFORM CHART -> TRADE SNAPSHOT -> TELEGRAM" requirement, so
+// there's no snapshot to take if no such pane is mounted.
+function SnapshotPreviewButton({ symbol, timeframe, snapshotWindow }: Omit<TelegramButtonProps, "payload">) {
+  const panes = useChartRegistry((s) => s.panes);
+  const [state, setState] = useState<SnapshotState>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+
+  async function handleClick() {
+    const chart = findChartForSymbol(panes, symbol, timeframe);
+    if (!chart) {
+      setState("failed");
+      setError(`No open chart pane showing ${symbol} · ${timeframe.toUpperCase()} - open one to preview a snapshot`);
+      return;
+    }
+    setState("capturing");
+    setError(null);
+    try {
+      const url = await chart.takeSnapshot(snapshotWindow);
+      setImageUrl(url);
+      setState("ready");
+    } catch (e) {
+      setState("failed");
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <div className="jr-snapshot">
+      <div className="jr-telegram">
+        <button type="button" className="hk-key" onClick={handleClick} disabled={state === "capturing"}>
+          {state === "capturing" ? "Capturing…" : "Preview Snapshot"}
+        </button>
+        {state === "failed" && <span className="neg">❌ {error}</span>}
+      </div>
+      {state === "ready" && imageUrl && <img className="jr-snapshot-img" src={imageUrl} alt={`${symbol} trade snapshot`} />}
+    </div>
+  );
+}
+
+// Telegram review is scoped to recent trades only - unix seconds for
+// 2024-01-01T00:00:00 UTC. Journal notes/tags/rating stay available for
+// every trade regardless of date; only the Send to Telegram/Preview
+// Snapshot buttons are gated by this.
+const TELEGRAM_REVIEW_CUTOFF = Date.UTC(2024, 0, 1) / 1000;
+
 export function TradesPanel() {
   const ws = useActiveWorkspace();
   const seek = useReplayStore((s) => s.seek);
-  const [backendTrades, setBackendTrades] = useState<Trade[]>([]);
-  const [bars, setBars] = useState<CandleBar[]>([]);
+  const [dataset, setDataset] = useState<SymbolTimeframeData | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const entries = useJournalStore((s) => s.entries);
 
@@ -97,26 +225,33 @@ export function TradesPanel() {
     let cancelled = false;
     // trades only exist on the 1H series - the strategy never trades daily
     dataLayer.getSymbolData(ws.symbol, "1h").then((d) => {
-      if (!cancelled) {
-        setBackendTrades(d.trades);
-        setBars(d.bars);
-      }
+      if (!cancelled) setDataset(d);
     });
     return () => {
       cancelled = true;
     };
   }, [ws.symbol]);
 
+  const backendTrades = dataset?.trades ?? [];
+  const bars = dataset?.bars ?? [];
+
   // A Pine indicator that records trades (backtest.recordTrade) takes over
   // this list entirely while it has any - same reasoning as ChartPane's
   // pane-header stat: that's what makes "change a setting, see the trade
   // count update" actually true, rather than showing two disconnected
-  // trade lists side by side.
-  const pineResults = usePineIndicators(bars);
+  // trade lists side by side. Kept as {trade, source} pairs (not the
+  // plain Trade[] collectPineTrades gives) because the Telegram buttons
+  // below need each trade's own PineRunResult - its entryBar/exitBar index
+  // THAT indicator's windowedBars, not any shared/full-dataset array (see
+  // tradeReviewPayload.ts's Pine-specific builders).
+  const pineResults = usePineIndicators(bars, dataset?.symbol, dataset?.timeframe);
   const removedPineTrades = usePineTradeOverridesStore((s) => s.removed);
-  const pineTrades = useMemo(() => collectPineTrades(pineResults, removedPineTrades), [pineResults, removedPineTrades]);
-  const trades = pineTrades.length > 0 ? pineTrades : backendTrades;
-  const fromPine = pineTrades.length > 0;
+  const pineTradesWithSource = useMemo(
+    () => collectPineTradesWithSource(pineResults, removedPineTrades),
+    [pineResults, removedPineTrades]
+  );
+  const fromPine = pineTradesWithSource.length > 0;
+  const trades = fromPine ? pineTradesWithSource.map((p) => p.trade) : backendTrades;
   const visiblePineCount = usePineIndicatorStore((s) => s.items.filter((i) => i.visible).length);
   // Distinguishes "still computing" from "genuinely produced zero trades" -
   // both look identical as an empty pineResults array otherwise, and a full
@@ -137,7 +272,8 @@ export function TradesPanel() {
       {fromPine && (
         <div className="panel-dim" style={{ padding: "6px 8px", fontSize: 11 }}>
           Showing trades recorded by a Pine indicator - editing its settings updates this list. Right-click a
-          position's zone on the chart to remove a trade.
+          position's zone on the chart to remove a trade. "Detected conditions" on a Telegram review are a
+          best-effort match against this script's own BOS/CHoCH/FVG labels, not a guarantee.
         </div>
       )}
       <table className="panel-table">
@@ -152,10 +288,34 @@ export function TradesPanel() {
           </tr>
         </thead>
         <tbody>
-          {trades.map((t) => {
+          {trades.map((t, i) => {
             const key = tradeKey(ws.symbol, t.entryBar);
             const hasEntry = !!entries[key] && (entries[key].note !== "" || entries[key].tags.length > 0 || entries[key].rating > 0);
             const isOpen = expanded === key;
+            // entryBar indexes a different bars array depending on source
+            // (see tradeReviewPayload.ts's own doc comments) - cheap
+            // either way, just an array lookup, so this runs for every
+            // row (not just the expanded one) to decide whether the
+            // Telegram buttons show at all.
+            const entryTime = fromPine
+              ? pineTradesWithSource[i].source.windowedBars[t.entryBar]?.time
+              : dataset?.bars[t.entryBar]?.time;
+            const eligibleForTelegram = entryTime != null && entryTime >= TELEGRAM_REVIEW_CUTOFF;
+            // Only actually build these (label scans for Pine, etc.) for
+            // the one row that's expanded - every other row never needs
+            // them.
+            let telegramPayload: TradeReviewPayload | null = null;
+            let telegramWindow: ChartSnapshotWindow | null = null;
+            if (isOpen && dataset && eligibleForTelegram) {
+              if (fromPine) {
+                const source = pineTradesWithSource[i].source;
+                telegramPayload = buildPineTradeReviewPayload(source, dataset.symbol, dataset.timeframe, t);
+                telegramWindow = computePineSnapshotWindow(source, t);
+              } else {
+                telegramPayload = buildTradeReviewPayload(dataset, t);
+                telegramWindow = computeSnapshotWindow(dataset, t);
+              }
+            }
             return (
               <Fragment key={key}>
                 <tr className={canJump ? "clickable" : ""} title={canJump ? "Jump replay to this trade" : "Switch to 1H to jump here"}>
@@ -190,6 +350,22 @@ export function TradesPanel() {
                   <tr className="jr-row">
                     <td colSpan={6}>
                       <JournalEditor tradeKey={key} />
+                      {dataset && telegramPayload && telegramWindow && (
+                        <>
+                          <SnapshotPreviewButton symbol={dataset.symbol} timeframe={dataset.timeframe} snapshotWindow={telegramWindow} />
+                          <SendToTelegramButton
+                            symbol={dataset.symbol}
+                            timeframe={dataset.timeframe}
+                            payload={telegramPayload}
+                            snapshotWindow={telegramWindow}
+                          />
+                        </>
+                      )}
+                      {!eligibleForTelegram && (
+                        <div className="jr-telegram">
+                          <span className="panel-dim">Telegram review is only available for trades from 2024 onward.</span>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 )}

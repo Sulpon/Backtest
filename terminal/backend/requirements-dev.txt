@@ -7,6 +7,6 @@
 uvicorn[standard]  # runs the local dev server (start.bat) - Vercel provides its own ASGI runtime
 pandas             # build_db.py / app/structure_engine.py
 numpy              # build_db.py / app/structure_engine.py
-python-dotenv      # app/marketdata/config.py (offline provider sync only, not imported by the live API)
-httpx              # app/marketdata/providers/* (same - offline sync only)
+python-dotenv      # app/marketdata/config.py (offline sync) + main.py's guarded local .env loading (Telegram config) - both no-op safely if this file isn't installed
+httpx              # app/marketdata/providers/* (offline sync) + app/telegram/service.py (guarded, lazy-imported - see that file)
 pytest             # tests/

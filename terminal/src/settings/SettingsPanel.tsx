@@ -11,6 +11,7 @@ import {
   type ChartFontSize,
 } from "./settingsStore";
 import { ACCENT_PRESETS, FONT_PRESETS } from "./presets";
+import { getTelegramStatus, testTelegram } from "../telegram/telegramApi";
 import "./SettingsPanel.css";
 
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta"]);
@@ -127,10 +128,79 @@ function AppearanceTab() {
   );
 }
 
+type TelegramStatusState = "loading" | "connected" | "not-configured" | "unreachable";
+
+function TelegramTab() {
+  const [status, setStatus] = useState<TelegramStatusState>("loading");
+  const [testState, setTestState] = useState<"idle" | "testing" | "sent" | "failed">("idle");
+  const [testError, setTestError] = useState<string | null>(null);
+
+  function refreshStatus() {
+    setStatus("loading");
+    getTelegramStatus()
+      .then((s) => setStatus(s.configured ? "connected" : "not-configured"))
+      .catch(() => setStatus("unreachable"));
+  }
+
+  useEffect(refreshStatus, []);
+
+  async function handleTest() {
+    setTestState("testing");
+    setTestError(null);
+    try {
+      const result = await testTelegram();
+      if (result.ok) {
+        setTestState("sent");
+      } else {
+        setTestState("failed");
+        setTestError(result.error);
+      }
+    } catch (e) {
+      setTestState("failed");
+      setTestError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <div className="ah-list">
+      <div className="settings-section-title">Telegram Trade Review</div>
+      <div className="ah-placeholder">
+        Local/self-hosted only for now - configure <code>TELEGRAM_BOT_TOKEN</code> and{" "}
+        <code>TELEGRAM_CHAT_ID</code> in <code>terminal/backend/.env</code> (see <code>.env.example</code> for how
+        to get both from @BotFather), then restart the backend. There's no in-app field for the token itself -
+        secrets stay server-side only, never sent to or stored in the browser.
+      </div>
+
+      <div className="settings-section-title">Status</div>
+      <div className="hk-row">
+        <span className="ah-row-label">
+          {status === "loading" && "Checking…"}
+          {status === "connected" && "● Connected"}
+          {status === "not-configured" && "○ Not configured"}
+          {status === "unreachable" && "○ Backend unreachable"}
+        </span>
+        <button type="button" className="hk-key" onClick={refreshStatus} disabled={status === "loading"}>
+          Refresh
+        </button>
+      </div>
+
+      {status === "connected" && (
+        <>
+          <button type="button" className="hk-key" onClick={handleTest} disabled={testState === "testing"}>
+            {testState === "testing" ? "Sending…" : "Test Telegram"}
+          </button>
+          {testState === "sent" && <div className="ah-placeholder">✅ Sent - check your Telegram chat.</div>}
+          {testState === "failed" && <div className="ah-placeholder">❌ {testError}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function SettingsPanel() {
   const open = useUiStore((s) => s.settingsOpen);
   const setOpen = useUiStore((s) => s.setSettingsOpen);
-  const [tab, setTab] = useState<"hotkeys" | "appearance">("hotkeys");
+  const [tab, setTab] = useState<"hotkeys" | "appearance" | "telegram">("hotkeys");
 
   if (!open) return null;
 
@@ -155,8 +225,19 @@ export function SettingsPanel() {
             >
               Appearance
             </button>
+            <button
+              type="button"
+              className={`ah-tab${tab === "telegram" ? " active" : ""}`}
+              onClick={() => setTab("telegram")}
+            >
+              Telegram
+            </button>
           </div>
-          <div className="ah-content">{tab === "hotkeys" ? <HotkeysTab /> : <AppearanceTab />}</div>
+          <div className="ah-content">
+            {tab === "hotkeys" && <HotkeysTab />}
+            {tab === "appearance" && <AppearanceTab />}
+            {tab === "telegram" && <TelegramTab />}
+          </div>
         </div>
       </div>
     </div>
