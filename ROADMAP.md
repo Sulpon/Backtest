@@ -57,7 +57,7 @@ database schema, or tests. No files deleted or moved.
 
 ## Phase 2 — Connect Market Data Providers
 
-**Status: Needs human decision — TWO open items: (1) provide real OANDA/FXCM credentials for full production verification, or explicitly accept mocked-provider verification as sufficient for now; (2) a newly-discovered, confirmed regression (2026-08-26, see note below) affecting `/api/marketdata/candles` in any real running deployment, requiring an architectural decision to fix.**
+**Status: Needs human decision — provide real OANDA/FXCM credentials for full production verification, or explicitly accept mocked-provider verification as sufficient for now. (The RO/RW connection regression discovered 2026-08-26, see note below, is fixed and committed as of the same day — 99/99 backend tests passing, `db.py`/`main.py` at zero diff — this is no longer an open item.)**
 
 **⚠️ Regression discovered 2026-08-26 (during Phase 3 Task 4's required
 coexistence diagnostic — see `tests/test_rw_ro_coexistence.py`), confirmed
