@@ -125,10 +125,74 @@ for why that matters).
 
 ## Phase 3 — General Backtesting Engine
 
-**Status: In progress — decisions recorded 2026-08-26; Task 1 (regression
-baseline harness) complete and committed 2026-08-26. Task 2
-(`BacktestConfig`/`RR_RATIO` extraction) complete 2026-08-26 — see below.
-See "Decisions" below before starting any further task.**
+**Status: In progress — decisions recorded 2026-08-26; Tasks 1-3 complete
+and committed 2026-08-26. Task 4 (DB schema for named runs + required
+rw/read-only coexistence proof) is next, unblocked. Task 5 (frontend
+store/UI) follows. See Decisions 5-7 below before starting either.**
+
+**Decisions 5-7 (recorded 2026-08-26, human-confirmed, following the same
+"Decisions" pattern as 1-4 above — final, not provisional).**
+
+5. **Validation label for parameter variation**: an EURUSD 1h run at a
+   non-default `rr_ratio` is `status="validated"`, same as the default.
+   Decision 1 already made `rr_ratio` a supported parameter; varying it is
+   using the engine as designed, not an unchecked extension. The
+   unvalidated/experimental label from Decision 2 is keyed on
+   symbol/timeframe only, never on which `rr_ratio` was used.
+6. **Route registration**: `POST /api/backtest/run` registers
+   unconditionally in `main.py`; on a deployment missing `pandas`/`numpy`
+   (`structure_engine.py`'s import requirements — see Decision 4, still
+   local-only, still not in `requirements.txt`) it returns 503, exactly
+   like `/api/telegram/status` and `/api/marketdata/status` already treat
+   a missing capability as a normal, reportable state rather than
+   environment-conditional routing.
+7. **Task split confirmed**: Task 3 (this task) is execution only — no
+   persistence, no schema, no frontend. Task 4 owns the `backtest_runs`/
+   `backtest_run_trades` schema in a new `app/backtest/repository.py`
+   (own `get_rw_connection()`, following `app/marketdata/repository.py`'s
+   precedent) and must open with a test proving `db.py`'s read-only
+   singleton and a new read-write connection to the same `data.duckdb`
+   actually coexist safely — this has never been exercised by the existing
+   suite (`test_marketdata_routes.py` uses a temp DB) and must not be
+   assumed. Task 5 is the frontend `backtestStore`/UI and must explicitly
+   address the `tradeKey(symbol, entryBar)` collision this document's
+   Journal section already flags for "once Phase 3 allows overlapping
+   trades."
+
+**Task 3 — done, 2026-08-26.** Added `terminal/backend/app/backtest/`
+(`runner.py`): a `(symbol, timeframe)` → CSV catalog (an independently
+-written literal, cross-checked against `build_db.CSV_FILES` by a test
+rather than shared/imported, keeping `build_db.py` at zero diff), the
+validated-combo rule (`{("EURUSD", "1h")}`, per Decisions 2 and 5), a
+20MB input-size guard (~3.5x the largest catalogued CSV), and `run()`,
+which imports `BacktestConfig`/`run_backtest` from `structure_engine`
+*inside its function body* only — confirmed via grep that `pandas`/
+`numpy`/`structure_engine` never appear at module scope, so `app/main.py`
+stays importable on a deployment without them. One new route,
+`POST /api/backtest/run` (`def`, not `async def` — runs in the
+threadpool), guarded by a non-blocking `threading.Lock` (429 if a run is
+already in progress). Response is `{symbol, timeframe, strategy, config,
+validation, trades, stats}` only — never `bars`/`daily*`/SMC-event arrays.
+`validation` is a required nested object; EURUSD 1h is `"validated"` at
+any `rr_ratio`, everything else `"experimental"` with a specific
+explanatory message.
+
+One code-review finding fixed during this task: `rr_ratio` had no
+validation, so a request with `rr_ratio<=0` reached
+`structure_engine.py`'s `breakevenWr = 100/(1+RR_RATIO)`, dividing by zero
+at exactly `-1.0` and producing nonsensical output otherwise — this
+surfaced as an opaque 502 instead of a clean rejection. Fixed with
+`Field(gt=0)` on the request model; a request with `rr_ratio<=0` now
+returns 422. A second, non-blocking finding (a dead `except HTTPException:
+raise` clause) was also removed for clarity.
+
+Verification: `test_backtest_routes.py` (9 tests, including the
+rr_ratio-validation regression) cross-checks the route's output against
+`run_backtest()` called directly, confirms the experimental label on a
+non-EURUSD-1h combo, confirms 404/422/429 error paths, and confirms
+`build_db.py`/`structure_engine.py`/`db.py` all have zero diff. Full
+backend suite: 95/95 passing (was 86 before this task). Frontend: 76/76
+passing, build clean (unaffected — backend-only task).
 
 **Task 2 — done, 2026-08-26.** Extracted `RR_RATIO` into a
 `@dataclass(frozen=True) class BacktestConfig` (single field,

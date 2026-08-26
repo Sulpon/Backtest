@@ -325,12 +325,29 @@ output is unchanged (proven byte-for-byte by
 signature). Every other constant (`DAILY_SWING_LEN`, `RETRACE_THRESHOLD`,
 `SWING_LEN`, `MAX_IMPULSE_BARS`, `USE_LINE_SOURCE`, `FIB_USE_BODY`, the
 inline `0.71` OTE anchor, the liquidity `tolerance_pct`, the fixed `-1.0`
-loss R) is still hardcoded. There is still no other symbol/timeframe, no
-on-demand execution path, and no way to backtest a genuinely different
-strategy without editing this function and rerunning `build_db.py` — see
-`ROADMAP.md`'s Phase 3 for the remaining, larger tasks and the explicit
-decisions already recorded there scoping what "any symbol/timeframe" will
-and won't mean.
+loss R) is still hardcoded, and there is still no way to backtest a
+genuinely different strategy without editing this function and rerunning
+`build_db.py` — see `ROADMAP.md`'s Phase 3 for the remaining, larger tasks.
+
+As of Phase 3 Task 3, `POST /api/backtest/run` (`app/backtest/runner.py` +
+one route in `app/main.py`) runs the engine on demand against any
+`(symbol, timeframe)` in a small local catalog, stateless — no persistence,
+no DB schema (Task 4's scope). Its response carries only `{trades, stats}`
+plus a *required* `validation: {status, validated, message}` object: only
+EURUSD 1h is `"validated"` (any `rr_ratio`, per Phase 3 Decisions 2 and 5);
+every other combo is `"experimental"` and explicitly labeled as such — the
+route can never silently present an unchecked combo as a real backtest
+result. `structure_engine.py`'s `pandas`/`numpy` dependency is imported
+lazily, inside the route's call path, never at `app/main.py`'s module
+scope, so a deployment without them (the current Vercel setup, per
+Decision 4) still serves every other route and reports 503 only if this
+one is actually invoked — the same "missing capability is a normal,
+reportable state" pattern `/api/telegram/status` and
+`/api/marketdata/status` already use. `build_db.py` is untouched by this
+route (verified at zero diff); the route's `(symbol, timeframe)` catalog
+is a second, independently-written literal cross-checked against
+`build_db.CSV_FILES` by a test, not a shared import, to avoid coupling a
+live route to the offline build script.
 
 Separately, the Pine interpreter supports a **non-standard `backtest.*`
 namespace** (`stdlib.ts`, `namespaces.backtest.recordTrade`) — not real

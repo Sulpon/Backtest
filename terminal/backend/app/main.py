@@ -1,13 +1,14 @@
 import base64
 import binascii
 import os
+import threading
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .db import get_connection
 
@@ -550,3 +551,106 @@ def get_marketdata_candles(
             for c in candles
         ],
     }
+
+
+# ============================================================================
+# ON-DEMAND BACKTEST EXECUTION - Roadmap Phase 3 Task 3. Stateless: no
+# persistence, no DB schema, no frontend (Decision 7 - Task 4 owns
+# backtest_runs/backtest_run_trades in a new app/backtest/repository.py;
+# Task 5 owns the frontend store/UI). Registers unconditionally (Decision 6):
+# on a deployment missing pandas/numpy (structure_engine.py's dependency,
+# still requirements-dev.txt-only per Decision 4) this reports 503, the same
+# "missing capability is a normal, reportable state" pattern
+# /api/telegram/status and /api/marketdata/status already use, rather than
+# environment-conditional route registration.
+# ============================================================================
+from .backtest.runner import (  # noqa: E402
+    BacktestEngineUnavailable,
+    BacktestInputTooLarge,
+    BacktestSymbolNotFound,
+    run as _run_backtest_engine,
+    validation_for as _backtest_validation_for,
+)
+
+# A ~100k-bar pure-Python loop under the GIL would otherwise visibly degrade
+# /api/dataset and every other concurrent request while it runs. This is a
+# single-run guard, not a queue: a second concurrent request is rejected
+# (429) rather than queued, since queuing would need its own state/eviction
+# story that this stateless task is explicitly not scoped to build (Decision
+# 7).
+_backtest_run_lock = threading.Lock()
+
+
+class BacktestRunRequest(BaseModel):
+    symbol: str
+    timeframe: str
+    # gt=0: structure_engine.py's breakevenWr = 100 / (1 + RR_RATIO) divides
+    # by zero at rr_ratio=-1 and produces a nonsensical (negative or >100%)
+    # breakeven win rate for any rr_ratio <= 0 - reject those at the request
+    # boundary (a clean 422) rather than letting them reach the engine and
+    # surface as an opaque 502.
+    rr_ratio: float = Field(default=2.45, gt=0)
+
+
+class BacktestValidation(BaseModel):
+    status: Literal["validated", "experimental"]
+    validated: bool
+    message: str
+
+
+class BacktestConfigOut(BaseModel):
+    rrRatio: float
+
+
+class BacktestRunResponse(BaseModel):
+    symbol: str
+    timeframe: str
+    strategy: Literal["smc_fib_ote"]
+    config: BacktestConfigOut
+    validation: BacktestValidation
+    trades: list[Trade]
+    stats: Stats
+
+
+@app.post("/api/backtest/run", response_model=BacktestRunResponse)
+def post_backtest_run(req: BacktestRunRequest):
+    """Stateless, synchronous, on-demand run of the one SMC/fib-OTE strategy
+    against any (symbol, timeframe) app/backtest/runner.py catalogs. `def`,
+    not `async def`, deliberately: FastAPI runs a sync route in its
+    threadpool, keeping the engine's pure-Python loop off the event loop
+    /api/dataset and everything else share. Returns only {trades, stats} -
+    never bars/daily*/SMC-event arrays, which already have a home in
+    /api/dataset and would multi-MB-duplicate it here."""
+    if not _backtest_run_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="a backtest run is already in progress")
+    try:
+        try:
+            result = _run_backtest_engine(req.symbol, req.timeframe, req.rr_ratio)
+        except BacktestSymbolNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except BacktestInputTooLarge as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except BacktestEngineUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Backtest engine failed: {exc}") from exc
+    finally:
+        _backtest_run_lock.release()
+
+    validation = _backtest_validation_for(req.symbol, req.timeframe)
+    trades = [
+        Trade(
+            dir=t[0], entryBar=t[1], entryPrice=t[2], sl=t[3], tp=t[4],
+            exitBar=t[5], result=t[6], r=t[7], setup=t[8],
+        )
+        for t in result["trades"]
+    ]
+    return BacktestRunResponse(
+        symbol=req.symbol,
+        timeframe=req.timeframe,
+        strategy="smc_fib_ote",
+        config=BacktestConfigOut(rrRatio=req.rr_ratio),
+        validation=BacktestValidation(**validation),
+        trades=trades,
+        stats=Stats(**result["stats"]),
+    )
