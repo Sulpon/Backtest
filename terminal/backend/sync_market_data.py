@@ -1,10 +1,13 @@
 """
 Manual entry point for Milestone 1/2 verification: syncs one symbol's base
 (1m) candles for a date range from the configured provider into
-data.duckdb, via the exact same MarketDataService path the application
+runtime.duckdb, via the exact same MarketDataService path the application
 will eventually use. Creates the market-data tables (instruments,
-data_sources, datasets, market_candles, data_sync_jobs) alongside the
-existing SMC-engine tables if they don't exist yet - never touches those.
+data_sources, datasets, market_candles, data_sync_jobs) in that file - a
+separate DuckDB file from data.duckdb (see app/runtime_db.py and
+ROADMAP.md's Phase 2 fix decision, 2026-08-26: a read-only data.duckdb
+connection and a read-write connection can't coexist on the same file in
+one process) - never touches data.duckdb or its SMC-engine tables.
 
 Usage (from terminal/backend, with .env filled in - see .env.example):
     .venv/Scripts/python.exe sync_market_data.py EURUSD 2026-07-01 2026-08-01

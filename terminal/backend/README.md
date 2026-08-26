@@ -1,7 +1,16 @@
 # Terminal backend
 
-FastAPI + DuckDB. The database is the only thing the API ever reads from -
-it never touches the CSV or runs the engine live.
+FastAPI + DuckDB. `data.duckdb` is the primary data source - `/api/dataset`,
+`/api/symbols`, and `/api/quotes` only ever read it, never touch the CSV, and
+never run the engine live. It stays read-only at request time, always (see
+`app/db.py`).
+
+A second file, `runtime.duckdb` (gitignored, request-path-writable - see
+`app/runtime_db.py`), is a separate write target used only by the
+`/api/marketdata/*` provider-sync routes (`app/marketdata/repository.py`).
+It is not a build artifact like `data.duckdb` - it's created on first use and
+never committed. See `docs/ARCHITECTURE.md`'s "Current market-data provider
+layer" for why these are two files instead of one.
 
 `requirements.txt` lists only what the deployed API itself imports (fastapi,
 pydantic, duckdb) - that's what Vercel installs (see `../vercel.json`).

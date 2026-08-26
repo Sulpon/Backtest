@@ -400,6 +400,26 @@ rejects them with a clear "not available in static mode" error), consumed
 today by `StatusBar.tsx`'s provider indicator + manual per-symbol sync
 action — a deliberately small, opt-in consumer, not a change to
 `ChartPane`'s primary (`getSymbolData`/`/api/dataset`) data path.
+
+**File split (fixed 2026-08-26, see `ROADMAP.md`'s Phase 2 fix decision).**
+`marketdata/repository.py`'s tables live in a separate DuckDB file,
+`terminal/backend/runtime.duckdb` (gitignored, request-path-writable — see
+`app/runtime_db.py`), not in `data.duckdb`. This fixes a confirmed
+regression: `app/db.py`'s process-wide, cached `read_only=True` singleton
+against `data.duckdb` and a read-write connection to that *same* file path
+cannot coexist in one process (DuckDB raises `ConnectionException: ...
+different configuration...` — see `tests/test_rw_ro_coexistence.py`), which
+previously made every `/api/marketdata/candles` call fail with a misleading
+502 once any `data.duckdb`-backed route had run in that process.
+`runtime_db.get_rw_connection()` opens a fresh, uncached connection to
+`runtime.duckdb` per call (never a cached singleton, so other
+independent-process writers — `sync_market_data.py`, `build_db.py`, pytest —
+keep working). `data.duckdb` stays read-only at request time, forever,
+with zero diff to `db.py`/`main.py`. See
+`tests/test_ro_rw_file_separation.py` for the regression test proving both
+`GET /api/dataset` and `GET /api/marketdata/candles` now succeed in the same
+process.
+
 **PARTIAL → CONNECTED (Phase 2).** Real-broker verification (an actual
 OANDA/FXCM account, not the mocked provider the test suite uses) is still
 outstanding — see the Phase 2 section of `ROADMAP.md`.
@@ -409,7 +429,7 @@ outstanding — see the Phase 2 section of `ROADMAP.md`.
 | Data | Where it lives today | Durability |
 |---|---|---|
 | Candles + DB-precomputed SMC events + the one hardcoded backtest's trades/stats | `data.duckdb` (backend, git-LFS) | Durable, server-side, but rebuilt destructively by `build_db.py` |
-| Provider-synced candles (FXCM/OANDA) | `data.duckdb`'s separate `market_candles` etc. tables, via `marketdata/repository.py` | Durable, server-side; readable via `GET /api/marketdata/candles` (Phase 2), still a separate dataset from `/api/dataset`'s `candles` table |
+| Provider-synced candles (FXCM/OANDA) | `runtime.duckdb`'s `market_candles` etc. tables, via `marketdata/repository.py` (a separate DuckDB file from `data.duckdb`, see "Current market-data provider layer") | Durable, server-side, request-path-writable; readable via `GET /api/marketdata/candles` (Phase 2), still a separate dataset from `/api/dataset`'s `candles` table |
 | Journal entries | browser `localStorage` (`journalStore.ts`) | Survives reloads, **not** a browser reset/reinstall, not shared across devices |
 | Drawings | browser `localStorage` (`drawingStore.ts`) | Same as journal |
 | Market-structure ground-truth dataset | browser `localStorage` (`marketStructureStore.ts`) + manual JSON export | Same as journal, with a manual export escape hatch |
@@ -490,18 +510,20 @@ Extend these; do not replace them without a demonstrated, specific reason:
    per binding forever; the likely driver of super-linear scaling. Not a
    problem yet at 100k-bar scale, but a real ceiling for more symbols, more
    history, or heavier `strategy()`-style scripts.
-5. **`data.duckdb` is both a checked-in build artifact and a live-sync
-   target.** `build_db.py` (`os.remove(DB_PATH)` then `duckdb.connect(...)`
-   fresh) deletes the *entire file* — `market_candles`/`instruments`/
-   `data_sync_jobs` included, not just `candles` — so running it after any
-   provider sync silently discards that synced data. Reconciliation rule
-   (Phase 2): `build_db.py` remains a manual, offline, developer-run
-   operation exactly as before; nothing in the `/api/marketdata/*` request
-   path ever triggers or races with it. A developer who runs both should
-   re-sync provider data after rebuilding, the same way they'd re-run
-   `sync_market_data.py` after any fresh `data.duckdb` — a documented
-   operational note, not a code-level guard, since Phase 2 deliberately
-   does not change `build_db.py`.
+5. **RESOLVED (2026-08-26).** Originally: "`data.duckdb` is both a
+   checked-in build artifact and a live-sync target" — `build_db.py`
+   (`os.remove(DB_PATH)` then `duckdb.connect(...)` fresh) deletes the
+   *entire file*, which would have silently discarded any
+   `market_candles`/`instruments`/`data_sync_jobs` data synced into that
+   same file. This is now moot: as of the Phase 2 regression fix (see
+   "Current market-data provider layer" and `ROADMAP.md`'s Phase 2 fix
+   decision), `marketdata/repository.py`'s tables live in a separate file,
+   `runtime.duckdb`, that `build_db.py` never touches, opens, or knows
+   exists. A `build_db.py` rebuild of `data.duckdb` has zero effect on
+   provider-synced data — there is no longer a shared-file race to
+   document an operational workaround for. `build_db.py` itself remains
+   unmodified (out of this fix's scope) and stays a manual, offline,
+   developer-run operation exactly as before.
 6. **Root-level legacy files** (`engine.py`, `smc_backtest_app.html`,
    duplicate `.pine` files, raw CSVs outside `terminal/`) — not a blocker,
    but a standing source of "which file is real" confusion. Not deleted or
@@ -550,6 +572,12 @@ implicit.
   phase wants provider data to actually replace or supplement the static
   dataset for specific symbols, that is a new, separately-documented
   decision — not something this phase's routes do implicitly.
+- **File-level split (2026-08-26 fix):** `candles` lives in `data.duckdb`
+  (read-only at request time); `market_candles` lives in a separate file,
+  `runtime.duckdb` (request-path read-write) — two different DuckDB files
+  on disk, not just two tables in one file. See "Current market-data
+  provider layer" above for why (a read-only singleton and a read-write
+  connection cannot share one file path in-process).
 
 **Market structure (swings/BOS/CHoCH/FVG/order blocks/liquidity/volume
 imbalance).**

@@ -22,3 +22,10 @@ Thumbs.db
 
 .vercel
 .env*
+
+# Request-path-writable DuckDB file (app/runtime_db.py) - request-path
+# mutable state, never a build artifact like data.duckdb (which IS
+# git-LFS tracked and committed). Never commit this or its WAL/tmp files.
+terminal/backend/runtime.duckdb
+terminal/backend/runtime.duckdb.wal
+terminal/backend/*.duckdb.tmp

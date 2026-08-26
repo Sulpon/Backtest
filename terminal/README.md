@@ -67,7 +67,7 @@ backend and everything else served as the static frontend build.
 | --- | --- | --- |
 | `VITE_API_BASE` | Project (used at build time) | Empty string. With frontend and backend on the same domain, the app should call relative paths like `/api/symbols`, not an absolute URL. |
 | `CORS_ALLOWED_ORIGINS` | Backend service (optional) | Leave unset. Only needed if the backend is ever split into its own project on a different origin (see below) - same-origin requests never hit CORS at all. |
-| `MARKET_DATA_PROVIDER`, `FXCM_ACCESS_TOKEN` / `OANDA_API_KEY` etc. | Backend service (optional) | Only needed if you run `sync_market_data.py` in a context that has these set - the live API (`/api/symbols`, `/api/dataset`) never calls a market-data provider at request time, it only reads `data.duckdb`. Never set these as `VITE_`-prefixed variables - that would ship them to the browser. |
+| `MARKET_DATA_PROVIDER`, `FXCM_ACCESS_TOKEN` / `OANDA_API_KEY` etc. | Backend service (optional) | Only needed if you run `sync_market_data.py`, or use the `/api/marketdata/*` routes, in a context that has these set - `/api/symbols`/`/api/dataset` never call a market-data provider at request time, they only read `data.duckdb`. `/api/marketdata/*` calls the provider and writes to a separate `runtime.duckdb` file (never `data.duckdb`) - see `backend/README.md` and `docs/ARCHITECTURE.md`. Never set these as `VITE_`-prefixed variables - that would ship them to the browser. |
 
 **Data file (`data.duckdb`) - how it actually gets to the deployed backend:**
 the backend serves data by reading `backend/data.duckdb` (read-only, ~55MB,

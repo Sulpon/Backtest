@@ -5,17 +5,27 @@ datasets, market_candles, data_sync_jobs) - deliberately separate from
 The existing SMC-engine tables (candles, swing_points, bos_events, ...) are
 never touched from here - this module only ever adds new tables alongside
 them (CREATE TABLE IF NOT EXISTS), never migrates or drops anything.
+
+As of the Phase 2 regression fix (recorded in ROADMAP.md, 2026-08-26),
+these tables live in `runtime.duckdb`, not `data.duckdb` - see
+`app/runtime_db.py` for why (a process-wide read-only `data.duckdb`
+singleton in `app/db.py` and a read-write connection to the same file
+cannot coexist). `DB_PATH` is kept as a module-level global, sourced from
+`runtime_db.RUNTIME_DB_PATH`, specifically so existing
+`monkeypatch.setattr(repository, "DB_PATH", ...)` call sites
+(`tests/test_service.py`, `tests/test_marketdata_routes.py`) keep working
+unchanged.
 """
 from __future__ import annotations
 
-import os
 import uuid
 
 import duckdb
 
+from .. import runtime_db
 from .models import Candle, PriceKind
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data.duckdb")
+DB_PATH = runtime_db.RUNTIME_DB_PATH
 
 _SCHEMA_STATEMENTS = [
     """
@@ -92,7 +102,12 @@ _SCHEMA_STATEMENTS = [
 
 
 def get_rw_connection() -> duckdb.DuckDBPyConnection:
-    return duckdb.connect(DB_PATH, read_only=False)
+    # Delegates to runtime_db's single connection-factory implementation,
+    # passing this module's own DB_PATH explicitly (rather than relying on
+    # runtime_db.RUNTIME_DB_PATH's default) so existing
+    # monkeypatch.setattr(repository, "DB_PATH", ...) tests keep working
+    # unchanged.
+    return runtime_db.get_rw_connection(DB_PATH)
 
 
 def ensure_schema(con: duckdb.DuckDBPyConnection) -> None:

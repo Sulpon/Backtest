@@ -81,13 +81,45 @@ verification because `tests/test_marketdata_routes.py` monkeypatches
 `repository.DB_PATH` to an isolated temp file, which sidesteps the exact
 interaction that breaks in reality — Phase 2's "✅ new backend tests cover
 the new route(s)" checkmark above was true of what was tested, but the
-test isolation itself masked this defect. **Any fix requires an
-architectural decision** (e.g., a single shared read-write connection for
-the whole process, vs. moving `market_candles` et al. to a separate
-`.duckdb` file, vs. something else) that touches stable component #2
-(`db.py`'s explicitly-documented "read-only at request time by design"
-property) — not something to patch unilaterally. See the pending
-`platform-architect` consult for options.
+test isolation itself masked this defect.
+
+**Fix decision (recorded 2026-08-26, human-confirmed, final).**
+`platform-architect` evaluated a shared process-wide read-write `data.duckdb`
+connection against a separate runtime file and recommended the latter,
+specifically because Vercel's serverless filesystem is not reliably
+writable — making `data.duckdb` itself read-write process-wide would risk
+breaking `/api/dataset`/`/api/symbols`/`/api/quotes` (the primary read
+path) in production to fix a secondary route, and would rewrite stable
+component #2's documented read-only-at-request-time property for a
+problem that doesn't require it.
+
+1. New `terminal/backend/app/runtime_db.py`: a per-call, uncached
+   `get_rw_connection()` against a new, gitignored
+   `terminal/backend/runtime.duckdb`. `data.duckdb` stays read-only at
+   request time, forever, with zero diff to `db.py`/`main.py`.
+2. `app/marketdata/repository.py`'s `DB_PATH` repoints at
+   `runtime_db.RUNTIME_DB_PATH` — a one-line change; its module-global
+   `DB_PATH` pattern is preserved so `test_service.py`/
+   `test_marketdata_routes.py`'s existing `monkeypatch.setattr(repository,
+   "DB_PATH", ...)` tests need zero changes. Schema (the five `CREATE
+   TABLE IF NOT EXISTS` statements) is byte-identical, only its file
+   location changes.
+3. **No migration needed**: verified directly against the real, checked-in
+   `data.duckdb` (2026-08-26) — none of `instruments`/`data_sources`/
+   `datasets`/`market_candles`/`data_sync_jobs` exist in it at all (zero
+   rows, zero tables). No live-credential sync has ever touched this
+   file. Skip building a migration script.
+4. Phase 3 Task 4's `backtest_runs`/`backtest_run_trades` (below) will
+   live in this SAME `runtime.duckdb`, not a third file — simpler, and a
+   natural home for Phase 5's future server-side persistence too. This
+   requires proving RW+RW connections to the same path actually coexist
+   (not yet tested — `test_rw_ro_coexistence.py`'s existing "same mode
+   coexists" test only exercises RO+RO) before Task 4 relies on it.
+5. **Risk #5 is resolved by this fix**, not just documented as mitigated —
+   once `market_candles` et al. live in `runtime.duckdb`, a `build_db.py`
+   rebuild of `data.duckdb` no longer touches them at all. `docs/
+   ARCHITECTURE.md`'s risk #5 should be rewritten to reflect this in the
+   same change that lands the fix.
 
 **Objective.** Wire the existing `backend/app/marketdata/` provider layer
 (FXCM/OANDA, incremental sync, validation) into the live API, so the app
@@ -213,6 +245,15 @@ validation, trades, stats}` only — never `bars`/`daily*`/SMC-event arrays.
 `validation` is a required nested object; EURUSD 1h is `"validated"` at
 any `rr_ratio`, everything else `"experimental"` with a specific
 explanatory message.
+
+**Known gap, not yet fixed (surfaced 2026-08-26 by a later task's code
+review, out of scope for that task):** `runner.run()`'s `os.path.getsize()`
+call has no existence check before it — a catalogued combo whose CSV is
+missing from disk raises an unhandled `FileNotFoundError`, which `main.py`'s
+generic exception handler turns into a misleading 502 instead of a clear
+config/deployment error. Currently latent (all 20 catalogued CSVs exist
+today); worth a small follow-up fix (catch `FileNotFoundError`, re-raise as
+a typed exception) whenever `app/backtest/` is next touched.
 
 One code-review finding fixed during this task: `rr_ratio` had no
 validation, so a request with `rr_ratio<=0` reached
