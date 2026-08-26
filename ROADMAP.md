@@ -57,7 +57,37 @@ database schema, or tests. No files deleted or moved.
 
 ## Phase 2 — Connect Market Data Providers
 
-**Status: Needs human decision (provide real OANDA/FXCM credentials for full production verification, or explicitly accept mocked-provider verification as sufficient for now) — core connectivity verified 2026-08-25, see note below.**
+**Status: Needs human decision — TWO open items: (1) provide real OANDA/FXCM credentials for full production verification, or explicitly accept mocked-provider verification as sufficient for now; (2) a newly-discovered, confirmed regression (2026-08-26, see note below) affecting `/api/marketdata/candles` in any real running deployment, requiring an architectural decision to fix.**
+
+**⚠️ Regression discovered 2026-08-26 (during Phase 3 Task 4's required
+coexistence diagnostic — see `tests/test_rw_ro_coexistence.py`), confirmed
+independently through the actual live routes, not just a diagnostic:**
+`app/db.py`'s cached `read_only=True` singleton connection and
+`app/marketdata/repository.py`'s `get_rw_connection()` (`duckdb.connect(...,
+read_only=False)`) both target the exact same `data.duckdb` file path.
+DuckDB refuses a second, differently-moded connection to a file path that
+already has one open in the same process — deterministically, regardless
+of which one opens first — raising `duckdb.ConnectionException: Can't open
+a connection to same database file with a different configuration than
+existing connections`. In practice: the moment any `db.py`-backed route
+(`/api/dataset`, `/api/symbols`, `/api/quotes`) has been hit once in a
+running server process, every subsequent `POST /api/marketdata/candles`
+call fails with a misleading `502 "Provider request failed: Connection
+Error: ..."` that has nothing to do with the actual provider. Reproduced
+directly: `client.get("/api/dataset", ...)` then
+`client.get("/api/marketdata/candles", ...)` in one process → 200, then
+502, exactly as described. This was not caught during Phase 2's original
+verification because `tests/test_marketdata_routes.py` monkeypatches
+`repository.DB_PATH` to an isolated temp file, which sidesteps the exact
+interaction that breaks in reality — Phase 2's "✅ new backend tests cover
+the new route(s)" checkmark above was true of what was tested, but the
+test isolation itself masked this defect. **Any fix requires an
+architectural decision** (e.g., a single shared read-write connection for
+the whole process, vs. moving `market_candles` et al. to a separate
+`.duckdb` file, vs. something else) that touches stable component #2
+(`db.py`'s explicitly-documented "read-only at request time by design"
+property) — not something to patch unilaterally. See the pending
+`platform-architect` consult for options.
 
 **Objective.** Wire the existing `backend/app/marketdata/` provider layer
 (FXCM/OANDA, incremental sync, validation) into the live API, so the app
@@ -126,9 +156,16 @@ for why that matters).
 ## Phase 3 — General Backtesting Engine
 
 **Status: In progress — decisions recorded 2026-08-26; Tasks 1-3 complete
-and committed 2026-08-26. Task 4 (DB schema for named runs + required
-rw/read-only coexistence proof) is next, unblocked. Task 5 (frontend
-store/UI) follows. See Decisions 5-7 below before starting either.**
+and committed 2026-08-26. Task 4 started 2026-08-26: its required first
+step (prove `db.py`'s read-only singleton and a new read-write connection
+coexist safely on `data.duckdb`) came back **negative** — see
+`tests/test_rw_ro_coexistence.py` and the regression note under Phase 2
+above. Per Decision 7, Task 4 stopped there — no schema, no
+`app/backtest/repository.py` — pending a `platform-architect`/human
+decision on the connection-strategy fix, which affects both this task and
+the already-shipped Phase 2 regression identically (same root cause). Task
+5 (frontend store/UI) remains blocked behind Task 4. See Decisions 5-7
+below.**
 
 **Decisions 5-7 (recorded 2026-08-26, human-confirmed, following the same
 "Decisions" pattern as 1-4 above — final, not provisional).**
