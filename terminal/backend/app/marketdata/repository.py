@@ -111,8 +111,12 @@ def get_rw_connection() -> duckdb.DuckDBPyConnection:
 
 
 def ensure_schema(con: duckdb.DuckDBPyConnection) -> None:
-    for stmt in _SCHEMA_STATEMENTS:
-        con.execute(stmt)
+    # Delegates to runtime_db's single, process-wide-locked implementation -
+    # see that module's `_schema_lock` docstring for why a bare loop of
+    # `CREATE TABLE IF NOT EXISTS` statements against a shared, uncached
+    # connection is not actually safe under concurrent callers, despite each
+    # statement being individually idempotent.
+    runtime_db.ensure_schema(con, _SCHEMA_STATEMENTS)
 
 
 def get_coverage(con: duckdb.DuckDBPyConnection, instrument_id: str, timeframe: str) -> tuple[int, int] | None:
