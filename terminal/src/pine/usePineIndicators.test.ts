@@ -47,6 +47,15 @@ describe("datasetVersion", () => {
     const gbpusd = bars(100000, 1_650_000_000);
     expect(datasetVersion(eurusd)).not.toBe(datasetVersion(gbpusd));
   });
+
+  it("changes when an interior close value differs, even with identical length and first/last time", () => {
+    // Regression test for the structural-only (length + endpoints) version
+    // of datasetVersion: two datasets that only differ in the middle of
+    // the array must not collide just because their shape matches.
+    const a = bars(100);
+    const b = bars(100).map((bar, i) => (i > 0 && i < 99 ? { ...bar, close: bar.close + 1 } : bar));
+    expect(datasetVersion(a)).not.toBe(datasetVersion(b));
+  });
 });
 
 describe("cacheKey", () => {

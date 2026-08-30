@@ -1032,12 +1032,32 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     // changes at the exact moment `data` does, alongside it.
     const token = latestWinsRef.current!.start();
     let fullArrived = false;
+    // Set only by the disk-cache branch below, once a prior-session snapshot
+    // has actually been applied - guards the windowed branch further down so
+    // it doesn't downgrade an already-painted (if possibly stale) full-shape
+    // dataset back to a partial windowed one moments later.
+    let diskCacheArrived = false;
 
     if (!dataLayer.hasCachedSymbolData(paneSymbol, paneTimeframe)) {
+      // Best-effort, possibly-stale disk snapshot from a prior session (see
+      // getCachedSymbolDataFromDisk's doc comment) - purely a faster paint
+      // for a warm reload of a previously-visited symbol/timeframe. Never
+      // treated as equivalent to a network-verified full fetch: dataIsFull
+      // is deliberately NOT set true here, so replay registration, total-
+      // bar-count logic, and market-structure-dataset stats/logging all
+      // still wait for the real getSymbolData() call below, exactly as
+      // today.
+      dataLayer.getCachedSymbolDataFromDisk(paneSymbol, paneTimeframe).then((cached) => {
+        if (!token.isCurrent() || fullArrived || !cached) return;
+        diskCacheArrived = true;
+        setData(cached);
+        setStatus("ready");
+      });
+
       dataLayer
         .getSymbolDataWindowed(paneSymbol, paneTimeframe, INITIAL_WINDOW_BARS)
         .then((d) => {
-          if (!token.isCurrent() || fullArrived) return;
+          if (!token.isCurrent() || fullArrived || diskCacheArrived) return;
           setData(d);
           setDataIsFull(false);
           setStatus("ready");

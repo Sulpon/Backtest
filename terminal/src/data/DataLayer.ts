@@ -1,3 +1,4 @@
+import { getCachedDataset, setCachedDataset } from "./dataLayerIndexedDbCache";
 import type { SymbolTimeframeData, Timeframe } from "./types";
 
 export interface Quote {
@@ -57,6 +58,18 @@ export interface DataLayer {
    * back to a symbol/timeframe already visited" actually near-instant
    * rather than merely fast. */
   hasCachedSymbolData(symbol: string, timeframe: Timeframe): boolean;
+  /** Best-effort read of a full dataset PERSISTED FROM A PRIOR SESSION -
+   * unlike everything else on this interface, this is NOT network-backed and
+   * NOT authoritative. It exists purely to paint something (chart candles)
+   * faster than even the windowed network fetch on a cold page load for a
+   * symbol/timeframe visited before - IndexedDB reads are ~1-5ms, no network
+   * round-trip at all. The caller MUST still issue the real getSymbolData()
+   * call unconditionally and MUST let its result unconditionally replace
+   * whatever this returned, whenever it lands - this method's result may be
+   * hours or days stale. Returns undefined on any cache miss, schema
+   * mismatch, staleness, or IndexedDB error - failing open exactly like
+   * pineIndexedDbCache's getCachedPineResult. */
+  getCachedSymbolDataFromDisk(symbol: string, timeframe: Timeframe): Promise<SymbolTimeframeData | undefined>;
   /** Last/previous close per symbol - e.g. for the watchlist. Deliberately
    * NOT built from getSymbolData(): that returns the full multi-MB candle +
    * SMC event history per symbol, which a watchlist row (two numbers) never
@@ -108,6 +121,13 @@ export class StaticJsonDataLayer implements DataLayer {
   // slower than this mode's own existing behavior.
   getSymbolDataWindowed(symbol: string, timeframe: Timeframe): Promise<SymbolTimeframeData> {
     return this.getSymbolData(symbol, timeframe);
+  }
+
+  // Offline/static mode already has everything it needs locally (the JSON
+  // files themselves), so there's no network round-trip to shortcut here -
+  // this tier adds no value in this mode.
+  async getCachedSymbolDataFromDisk(): Promise<SymbolTimeframeData | undefined> {
+    return undefined;
   }
 
   // No lightweight quote endpoint in static/offline mode - falls back to
@@ -230,10 +250,23 @@ export class ApiDataLayer implements DataLayer {
         .then((res) => {
           if (!res.ok) throw this.unreachable(res.status);
           return res.json() as Promise<SymbolTimeframeData>;
+        })
+        .then((d) => {
+          // Fire-and-forget: persist for next time. Never awaited/blocking
+          // and never allowed to affect this call's own result - a failed
+          // or slow disk write must never delay or break the real fetch.
+          void setCachedDataset(symbol, timeframe, d);
+          return d;
         });
       this.cache.set(key, pending);
     }
     return pending;
+  }
+
+  // Best-effort disk read, see the interface doc comment. Never a
+  // replacement for getSymbolData() - just a possibly-stale head start.
+  getCachedSymbolDataFromDisk(symbol: string, timeframe: Timeframe): Promise<SymbolTimeframeData | undefined> {
+    return getCachedDataset(symbol, timeframe);
   }
 
   // Not cached - see the interface doc comment. Reuses the same
