@@ -1,0 +1,53 @@
+.right-sidebar {
+  flex: 0 0 auto;
+  display: flex;
+  height: 100%;
+}
+
+.right-sidebar-rail {
+  width: var(--sidebar-w-collapsed);
+  flex: 0 0 auto;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: var(--space-2) 0;
+}
+
+/* .rail-btn / .rail-glyph reused as-is from LeftToolRail.css - already
+   loaded globally (LeftToolRail always mounts in AppShell) and already
+   exactly the compact icon-button look this sidebar needs. */
+
+.right-sidebar-panel {
+  width: var(--sidebar-w);
+  flex: 0 0 auto;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.right-sidebar-panel-title {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--bg-panel-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.right-sidebar-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.si-symbol {
+  padding: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  border-bottom: 1px solid var(--border);
+}

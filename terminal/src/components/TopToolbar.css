@@ -100,6 +100,11 @@
   color: var(--text);
 }
 
+.tb-chart-type button {
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
 .tb-rr-label {
   font-size: 10.5px;
   font-weight: 600;

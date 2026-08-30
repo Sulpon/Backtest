@@ -1,0 +1,15 @@
+.text-edit-overlay {
+  position: absolute;
+  z-index: 5;
+  min-width: 60px;
+  min-height: 20px;
+  padding: 2px 4px;
+  background: var(--bg-elevated, #1a1f29);
+  border: 1px solid var(--accent, #4f8cff);
+  border-radius: 3px;
+  color: var(--text, #e7ebf3);
+  font: 13px -apple-system, "Segoe UI", Arial, sans-serif;
+  resize: none;
+  outline: none;
+  box-shadow: var(--shadow-1, 0 2px 8px rgba(0, 0, 0, 0.4));
+}

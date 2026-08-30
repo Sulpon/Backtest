@@ -42,6 +42,18 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   bosbear: "Mark a bearish Break of Structure you identified",
   chochbull: "Mark a bullish Change of Character you identified",
   chochbear: "Mark a bearish Change of Character you identified",
+  text: "Click to place a text label, then type",
+  arrow: "Draw a line with an arrowhead at the end",
+  circle: "Draw a circle from its center outward",
+  ellipse: "Draw an ellipse inside a bounding box",
+  triangle: "Draw a triangle from three points",
+  parallelchannel: "Draw a channel from a baseline plus a width point",
+  fibextension: "Project extension levels from a 3-point swing",
+  fibchannel: "Draw a channel with Fibonacci-ratio levels between its lines",
+  pricerange: "Measure the price change between two points",
+  daterange: "Measure the elapsed time between two points",
+  brush: "Freehand drawing",
+  highlighter: "Freehand drawing with a translucent stroke",
 };
 
 // The automatic SMC overlay toggles in the Analysis hub (architecture doc,
@@ -66,7 +78,7 @@ export const TOOL_GROUPS: ToolGroup[] = [
       t("hline", "Horizontal Line", true),
       t("vline", "Vertical Line", true),
       t("ray", "Ray", true),
-      t("arrow", "Arrow"),
+      t("arrow", "Arrow", true),
       t("polyline", "Polyline"),
       t("path", "Path"),
     ],
@@ -75,7 +87,7 @@ export const TOOL_GROUPS: ToolGroup[] = [
     id: "channels",
     label: "Channels",
     tools: [
-      t("parallelchannel", "Parallel Channel"),
+      t("parallelchannel", "Parallel Channel", true),
       t("regressionchannel", "Regression Channel"),
       t("flatchannel", "Flat Top/Bottom"),
     ],
@@ -85,9 +97,9 @@ export const TOOL_GROUPS: ToolGroup[] = [
     label: "Fibonacci",
     tools: [
       t("fibretracement", "Fib Retracement", true),
-      t("fibextension", "Fib Extension"),
+      t("fibextension", "Fib Extension", true),
       t("trendfib", "Trend-Based Fib"),
-      t("fibchannel", "Fib Channel"),
+      t("fibchannel", "Fib Channel", true),
       t("fibtimezone", "Fib Time Zone"),
     ],
   },
@@ -96,16 +108,16 @@ export const TOOL_GROUPS: ToolGroup[] = [
     label: "Shapes",
     tools: [
       t("rectangle", "Rectangle", true),
-      t("circle", "Circle"),
-      t("ellipse", "Ellipse"),
-      t("triangle", "Triangle"),
+      t("circle", "Circle", true),
+      t("ellipse", "Ellipse", true),
+      t("triangle", "Triangle", true),
       t("polygon", "Polygon"),
     ],
   },
   {
     id: "annotations",
     label: "Annotations",
-    tools: [t("text", "Text"), t("note", "Note"), t("callout", "Callout"), t("pricelabel", "Price Label")],
+    tools: [t("text", "Text", true), t("note", "Note"), t("callout", "Callout"), t("pricelabel", "Price Label")],
   },
   {
     id: "risk",
@@ -125,11 +137,11 @@ export const TOOL_GROUPS: ToolGroup[] = [
   {
     id: "measurement",
     label: "Measurement",
-    tools: [t("measure", "Measure")],
+    tools: [t("pricerange", "Price Range", true), t("daterange", "Date Range", true)],
   },
   {
     id: "brushes",
     label: "Brushes",
-    tools: [t("brush", "Brush"), t("highlighter", "Highlighter"), t("eraser", "Eraser")],
+    tools: [t("brush", "Brush", true), t("highlighter", "Highlighter", true), t("eraser", "Eraser")],
   },
 ];

@@ -239,6 +239,13 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   const [chartReady, setChartReady] = useState(false);
   const [bodyEl, setBodyEl] = useState<HTMLDivElement | null>(null);
   const [sessionBandRects, setSessionBandRects] = useState<{ left: number; width: number; color: string }[]>([]);
+  // Chart-header OHLC/change readout (TradingView-style corner legend) -
+  // just the bar INDEX, not a copied object, to keep this hover-driven
+  // state update as cheap as possible; the actual OHLC/change values are
+  // derived from `data.bars[hoveredBarIdx]` at render time below. null
+  // means "crosshair isn't over the chart right now" - the header then
+  // falls back to the last bar, same as the chart's own default view does.
+  const [hoveredBarIdx, setHoveredBarIdx] = useState<number | null>(null);
   // Only ever the COMPLETE dataset, per this ref's own contract (relied on
   // by takeSnapshot() and the replay-cursor-follow effect below) - never
   // the transient fast-paint window. While only the window has landed,
@@ -932,9 +939,30 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     }
     chart.subscribeClick(onChartClick);
 
+    // Chart-header OHLC readout - native subscribeCrosshairMove, same
+    // mount/cleanup shape as onChartClick above. Only ever calls React
+    // setState (a plain number or null) - never touches dataRef/seriesRef,
+    // so this can't race or interfere with any of the mutable-ref-driven
+    // effects elsewhere in this component.
+    function onCrosshairMove(param: { time?: Time }) {
+      if (!param.time) {
+        setHoveredBarIdx(null);
+        return;
+      }
+      const bars = dataRef.current?.bars ?? latestDataRef.current?.bars;
+      if (!bars || bars.length === 0) {
+        setHoveredBarIdx(null);
+        return;
+      }
+      const idx = nearestIndexByTime(bars, param.time as number, (b) => b.time);
+      setHoveredBarIdx(idx >= 0 ? idx : null);
+    }
+    chart.subscribeCrosshairMove(onCrosshairMove);
+
     return () => {
       ro.disconnect();
       chart.unsubscribeClick(onChartClick);
+      chart.unsubscribeCrosshairMove(onCrosshairMove);
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
@@ -1139,6 +1167,30 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   // current" the user asked to eliminate everywhere, not just for Pine.
   const displayStats = dataMatchesPane ? (pineStats ?? liveStats ?? data?.stats ?? null) : null;
 
+  // Chart-header OHLC/change readout. Mirrors applyReplayCursor's own
+  // `bars.slice(0, cursorBar + 1)` (replay/applyCursor.ts) using already-
+  // reactive state (`data`, `replayActive`, `localReplayBar`) rather than
+  // reading dataRef/seriesRef directly - a ref mutation alone doesn't
+  // trigger a re-render, so reading refs here would show a stale bar until
+  // some unrelated re-render happened to catch it up. Falls back to the
+  // last visible bar (exactly what the candle series itself currently
+  // ends on) whenever the crosshair isn't over the chart.
+  const headerBars = dataMatchesPane && data ? (replayActive ? data.bars.slice(0, localReplayBar + 1) : data.bars) : null;
+  const headerIdx = headerBars && headerBars.length > 0 ? Math.min(hoveredBarIdx ?? headerBars.length - 1, headerBars.length - 1) : null;
+  const headerBar = headerIdx != null ? headerBars![headerIdx] : null;
+  const headerPrevBar = headerIdx != null && headerIdx > 0 ? headerBars![headerIdx - 1] : null;
+  const headerChange = headerBar && headerPrevBar ? headerBar.close - headerPrevBar.close : null;
+  const headerChangePct = headerChange != null && headerPrevBar && headerPrevBar.close !== 0 ? (headerChange / headerPrevBar.close) * 100 : null;
+
+  // Active-indicator legend (color dot + name) - reuses the SAME store
+  // subscriptions already in scope for rendering (indicators/
+  // customIndicators/pineResults), no new reads.
+  const indicatorLegend = [
+    ...indicators.map((ind) => ({ id: `builtin-${ind.id}`, label: ind.type === "sma" || ind.type === "ema" ? `${ind.type.toUpperCase()} ${ind.period}` : `BB ${ind.period}`, color: ind.color })),
+    ...customIndicators.filter((ind) => ind.visible).map((ind) => ({ id: `custom-${ind.id}`, label: ind.name, color: ind.color })),
+    ...pineResults.filter((r) => r.indicator.visible).map((r) => ({ id: `pine-${r.indicator.id}`, label: r.indicator.name, color: "#4f8cff" })),
+  ];
+
   return (
     <div className="chart-pane">
       <div className="pane-header">
@@ -1161,6 +1213,31 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
             </button>
           ))}
         </div>
+        {headerBar && (
+          <div className="pane-ohlc mono">
+            <span className="pane-ohlc-item">O<b>{headerBar.open.toFixed(5)}</b></span>
+            <span className="pane-ohlc-item">H<b>{headerBar.high.toFixed(5)}</b></span>
+            <span className="pane-ohlc-item">L<b>{headerBar.low.toFixed(5)}</b></span>
+            <span className="pane-ohlc-item">C<b>{headerBar.close.toFixed(5)}</b></span>
+            {headerChange != null && headerChangePct != null && (
+              <span className={headerChange >= 0 ? "pos" : "neg"}>
+                {headerChange >= 0 ? "+" : ""}
+                {headerChange.toFixed(5)} ({headerChangePct >= 0 ? "+" : ""}
+                {headerChangePct.toFixed(2)}%)
+              </span>
+            )}
+          </div>
+        )}
+        {indicatorLegend.length > 0 && (
+          <div className="pane-indicator-legend">
+            {indicatorLegend.map((ind) => (
+              <span key={ind.id} className="pane-indicator-chip" title={ind.label}>
+                <span className="pane-indicator-dot" style={{ background: ind.color }} />
+                {ind.label}
+              </span>
+            ))}
+          </div>
+        )}
         {replayActive && (
           <span className="pane-replay-badge">{isPrimary ? `REPLAY · bar ${localReplayBar + 1}` : "REPLAY · linked"}</span>
         )}

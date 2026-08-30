@@ -1,6 +1,6 @@
 import type { DrawingObject, DrawingPoint, DrawingStyle, DrawingType } from "./types";
 import { DEFAULT_STYLE } from "./types";
-import { distToSegment, pointInRect, type PixelPoint } from "./geometry";
+import { distToSegment, pointInRect, pointInTriangle, distToPolyline, type PixelPoint } from "./geometry";
 import type { ModifierKeyState } from "./interactionState";
 
 export interface DrawScale {
@@ -526,6 +526,522 @@ function marketStructureKind(type: DrawingType, toolLabel: string, displayLabel:
   };
 }
 
+// ============================================================================
+// Phase 3: brand-new tools (no prior canvas-only history to port - each of
+// these ships with BOTH this render()/hitTest() (used for the live
+// placement preview and as the flag-off fallback) AND a matching
+// ISeriesPrimitive under src/drawing/primitives/, following the exact
+// pattern rectanglePrimitive.ts established in Phase 1. Reuses existing
+// private helpers already in this file (withAlpha, extendToEdges,
+// drawArrowhead, snapAngleFromAnchor, rectBounds, rectResizeHandles) rather
+// than duplicating them, per "reuse existing... do not duplicate code".
+// ============================================================================
+
+const text: DrawingKind = {
+  type: "text",
+  label: "Text",
+  pointCount: 1,
+  defaultStyle: DEFAULT_STYLE,
+  render(ctx, scale, obj) {
+    const p = scale.toPx(obj.points[0].time, obj.points[0].price);
+    if (!p) return;
+    const content = typeof obj.props.text === "string" ? obj.props.text : "";
+    if (!content) return;
+    const fontSize = typeof obj.props.fontSize === "number" ? obj.props.fontSize : 13;
+    ctx.fillStyle = obj.style.color;
+    ctx.font = `${fontSize}px -apple-system, 'Segoe UI', Arial, sans-serif`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(content, p.x, p.y);
+    ctx.textBaseline = "alphabetic";
+  },
+  hitTest(scale, obj, x, y) {
+    const p = scale.toPx(obj.points[0].time, obj.points[0].price);
+    if (!p) return false;
+    const content = typeof obj.props.text === "string" ? obj.props.text : "";
+    const fontSize = typeof obj.props.fontSize === "number" ? obj.props.fontSize : 13;
+    // No CanvasRenderingContext2D available in hitTest's signature to call
+    // measureText() - an approximate average-glyph-width box is good enough
+    // for click/selection purposes (same tradeoff PineIndicatorLayer's own
+    // label hit-testing makes, just without that layer's real ctx access).
+    const width = Math.max(content.length * fontSize * 0.6, fontSize);
+    return pointInRect(x, y, p.x, p.y, p.x + width, p.y + fontSize * 1.4, 4);
+  },
+  handleIndices: () => [0],
+};
+
+const arrow: DrawingKind = {
+  type: "arrow",
+  label: "Arrow",
+  pointCount: 2,
+  defaultStyle: DEFAULT_STYLE,
+  render(ctx, scale, obj) {
+    const [p1, p2] = obj.points;
+    const a = scale.toPx(p1.time, p1.price);
+    const b = scale.toPx(p2.time, p2.price);
+    if (!a || !b) return;
+    ctx.strokeStyle = obj.style.color;
+    ctx.lineWidth = obj.style.lineWidth;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    drawArrowhead(ctx, b, a, obj.style.color);
+  },
+  hitTest(scale, obj, x, y) {
+    const [p1, p2] = obj.points;
+    const a = scale.toPx(p1.time, p1.price);
+    const b = scale.toPx(p2.time, p2.price);
+    if (!a || !b) return false;
+    return distToSegment(x, y, a.x, a.y, b.x, b.y) <= HIT_PX;
+  },
+  handleIndices: () => [0, 1],
+  constrainPoint: (anchor, free, scale, modifiers) => snapAngleFromAnchor(anchor[0], free, scale, modifiers),
+};
+
+/** Circle is a center+edge model (point 0 = center, point 1 = a point on
+ * the edge) rather than rectangle's two-corners model - radius is the
+ * pixel distance between the two, recomputed from their own data
+ * coordinates every render, so it stays anchored the same way every other
+ * two-point tool does. */
+function circleGeometry(scale: DrawScale, obj: DrawingObject): { c: PixelPoint; r: number } | null {
+  const [p1, p2] = obj.points;
+  const c = scale.toPx(p1.time, p1.price);
+  const e = scale.toPx(p2.time, p2.price);
+  if (!c || !e) return null;
+  return { c, r: Math.hypot(e.x - c.x, e.y - c.y) };
+}
+
+const circle: DrawingKind = {
+  type: "circle",
+  label: "Circle",
+  pointCount: 2,
+  defaultStyle: DEFAULT_STYLE,
+  render(ctx, scale, obj) {
+    const geo = circleGeometry(scale, obj);
+    if (!geo) return;
+    const opacity = typeof obj.props.fillOpacity === "number" ? (obj.props.fillOpacity as number) : 0.1;
+    ctx.beginPath();
+    ctx.arc(geo.c.x, geo.c.y, geo.r, 0, Math.PI * 2);
+    ctx.fillStyle = withAlpha(obj.style.color, opacity);
+    ctx.fill();
+    ctx.strokeStyle = obj.style.color;
+    ctx.lineWidth = obj.style.lineWidth;
+    ctx.stroke();
+  },
+  hitTest(scale, obj, x, y) {
+    const geo = circleGeometry(scale, obj);
+    if (!geo) return false;
+    return Math.hypot(x - geo.c.x, y - geo.c.y) <= geo.r + HIT_PX;
+  },
+  handleIndices: () => [0, 1],
+};
+
+const ellipse: DrawingKind = {
+  type: "ellipse",
+  label: "Ellipse",
+  pointCount: 2,
+  defaultStyle: DEFAULT_STYLE,
+  render(ctx, scale, obj) {
+    const bounds = rectBounds(scale, obj);
+    if (!bounds) return;
+    const { x0, x1, y0, y1 } = bounds;
+    const opacity = typeof obj.props.fillOpacity === "number" ? (obj.props.fillOpacity as number) : 0.12;
+    ctx.beginPath();
+    ctx.ellipse((x0 + x1) / 2, (y0 + y1) / 2, Math.max((x1 - x0) / 2, 0.01), Math.max((y1 - y0) / 2, 0.01), 0, 0, Math.PI * 2);
+    ctx.fillStyle = withAlpha(obj.style.color, opacity);
+    ctx.fill();
+    ctx.strokeStyle = obj.style.color;
+    ctx.lineWidth = obj.style.lineWidth;
+    ctx.stroke();
+  },
+  hitTest(scale, obj, x, y) {
+    const bounds = rectBounds(scale, obj);
+    if (!bounds) return false;
+    const { x0, x1, y0, y1 } = bounds;
+    const rx = Math.max((x1 - x0) / 2, 1);
+    const ry = Math.max((y1 - y0) / 2, 1);
+    const nx = (x - (x0 + x1) / 2) / rx;
+    const ny = (y - (y0 + y1) / 2) / ry;
+    return nx * nx + ny * ny <= 1.15; // small forgiveness band around the true edge
+  },
+  handleIndices: () => [0, 1],
+  resizeHandles: rectResizeHandles,
+  constrainPoint(anchor, free, scale, modifiers) {
+    if (!modifiers.shift) return free; // Shift = perfect circle (square bounding box), same math as rectangle's own Shift constraint
+    const a = scale.toPx(anchor[0].time, anchor[0].price);
+    const f = scale.toPx(free.time, free.price);
+    if (!a || !f) return free;
+    const dx = f.x - a.x;
+    const dy = f.y - a.y;
+    const m = Math.max(Math.abs(dx), Math.abs(dy));
+    const target = { x: a.x + Math.sign(dx || 1) * m, y: a.y + Math.sign(dy || 1) * m };
+    return scale.fromPx(target.x, target.y) ?? free;
+  },
+};
+
+const triangle: DrawingKind = {
+  type: "triangle",
+  label: "Triangle",
+  pointCount: 3,
+  defaultStyle: DEFAULT_STYLE,
+  render(ctx, scale, obj) {
+    // A 3-point tool's live PREVIEW object can have only 2 points (one
+    // corner placed, one still following the cursor) - hitTest never sees
+    // this (only ever called against a finished, already-3-point stored
+    // object), but render() must degrade gracefully to a plain line so
+    // placement has visible feedback before the 3rd click.
+    const pts = obj.points.map((p) => scale.toPx(p.time, p.price)).filter((p): p is PixelPoint => p != null);
+    if (pts.length < 2) return;
+    ctx.strokeStyle = obj.style.color;
+    ctx.lineWidth = obj.style.lineWidth;
+    if (pts.length === 2) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      ctx.lineTo(pts[1].x, pts[1].y);
+      ctx.stroke();
+      return;
+    }
+    const [a, b, c] = pts;
+    const opacity = typeof obj.props.fillOpacity === "number" ? (obj.props.fillOpacity as number) : 0.12;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.lineTo(c.x, c.y);
+    ctx.closePath();
+    ctx.fillStyle = withAlpha(obj.style.color, opacity);
+    ctx.fill();
+    ctx.stroke();
+  },
+  hitTest(scale, obj, x, y) {
+    const pts = obj.points.map((p) => scale.toPx(p.time, p.price)).filter((p): p is PixelPoint => p != null);
+    if (pts.length < 3) return false;
+    const [a, b, c] = pts;
+    if (pointInTriangle(x, y, a.x, a.y, b.x, b.y, c.x, c.y)) return true;
+    return (
+      distToSegment(x, y, a.x, a.y, b.x, b.y) <= HIT_PX ||
+      distToSegment(x, y, b.x, b.y, c.x, c.y) <= HIT_PX ||
+      distToSegment(x, y, c.x, c.y, a.x, a.y) <= HIT_PX
+    );
+  },
+  handleIndices: () => [0, 1, 2],
+};
+
+/** Shared by parallelchannel and fibchannel: point 0/1 define the
+ * baseline, point 2 (optional - absent during the 2-point placement
+ * preview) defines the channel's perpendicular offset. `hasOffset` is
+ * false only during that in-progress preview; every stored (finished)
+ * object always has all 3 points, so hitTest never needs to check it. */
+interface ChannelGeometry {
+  a: PixelPoint;
+  b: PixelPoint;
+  a2: PixelPoint;
+  b2: PixelPoint;
+  hasOffset: boolean;
+}
+
+function channelGeometry(scale: DrawScale, obj: DrawingObject): ChannelGeometry | null {
+  const [p0, p1, p2] = obj.points;
+  const a = scale.toPx(p0.time, p0.price);
+  const b = scale.toPx(p1.time, p1.price);
+  if (!a || !b) return null;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  let offset = 0;
+  let hasOffset = false;
+  if (p2) {
+    const c = scale.toPx(p2.time, p2.price);
+    if (c) {
+      offset = (c.x - a.x) * nx + (c.y - a.y) * ny;
+      hasOffset = true;
+    }
+  }
+  return { a, b, a2: { x: a.x + nx * offset, y: a.y + ny * offset }, b2: { x: b.x + nx * offset, y: b.y + ny * offset }, hasOffset };
+}
+
+const parallelchannel: DrawingKind = {
+  type: "parallelchannel",
+  label: "Parallel Channel",
+  pointCount: 3,
+  defaultStyle: DEFAULT_STYLE,
+  render(ctx, scale, obj) {
+    const geo = channelGeometry(scale, obj);
+    if (!geo) return;
+    ctx.strokeStyle = obj.style.color;
+    ctx.lineWidth = obj.style.lineWidth;
+    if (geo.hasOffset) {
+      const opacity = typeof obj.props.fillOpacity === "number" ? (obj.props.fillOpacity as number) : 0.1;
+      ctx.beginPath();
+      ctx.moveTo(geo.a.x, geo.a.y);
+      ctx.lineTo(geo.b.x, geo.b.y);
+      ctx.lineTo(geo.b2.x, geo.b2.y);
+      ctx.lineTo(geo.a2.x, geo.a2.y);
+      ctx.closePath();
+      ctx.fillStyle = withAlpha(obj.style.color, opacity);
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.moveTo(geo.a.x, geo.a.y);
+    ctx.lineTo(geo.b.x, geo.b.y);
+    ctx.stroke();
+    if (geo.hasOffset) {
+      ctx.beginPath();
+      ctx.moveTo(geo.a2.x, geo.a2.y);
+      ctx.lineTo(geo.b2.x, geo.b2.y);
+      ctx.stroke();
+    }
+  },
+  hitTest(scale, obj, x, y) {
+    const geo = channelGeometry(scale, obj);
+    if (!geo) return false;
+    return distToSegment(x, y, geo.a.x, geo.a.y, geo.b.x, geo.b.y) <= HIT_PX || distToSegment(x, y, geo.a2.x, geo.a2.y, geo.b2.x, geo.b2.y) <= HIT_PX;
+  },
+  handleIndices: () => [0, 1, 2],
+};
+
+const fibchannel: DrawingKind = {
+  type: "fibchannel",
+  label: "Fib Channel",
+  pointCount: 3,
+  defaultStyle: { color: "#d4a24e", lineWidth: 1 },
+  render(ctx, scale, obj) {
+    const geo = channelGeometry(scale, obj);
+    if (!geo) return;
+    if (!geo.hasOffset) {
+      ctx.strokeStyle = obj.style.color;
+      ctx.lineWidth = obj.style.lineWidth;
+      ctx.beginPath();
+      ctx.moveTo(geo.a.x, geo.a.y);
+      ctx.lineTo(geo.b.x, geo.b.y);
+      ctx.stroke();
+      return;
+    }
+    // Reuses FIB_LEVELS (the same 0..1 ratios fibretracement uses) as the
+    // channel's interpolation fractions between the baseline (0) and the
+    // offset line (1) - one shared level list instead of a second constant.
+    FIB_LEVELS.forEach((f) => {
+      const isEdge = f === 0 || f === 1;
+      const p1 = { x: geo.a.x + (geo.a2.x - geo.a.x) * f, y: geo.a.y + (geo.a2.y - geo.a.y) * f };
+      const p2 = { x: geo.b.x + (geo.b2.x - geo.b.x) * f, y: geo.b.y + (geo.b2.y - geo.b.y) * f };
+      ctx.strokeStyle = isEdge ? obj.style.color : "rgba(150,160,180,0.55)";
+      ctx.lineWidth = isEdge ? obj.style.lineWidth : 1;
+      if (!isEdge) ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    });
+  },
+  hitTest(scale, obj, x, y) {
+    const geo = channelGeometry(scale, obj);
+    if (!geo) return false;
+    return distToSegment(x, y, geo.a.x, geo.a.y, geo.b.x, geo.b.y) <= HIT_PX || distToSegment(x, y, geo.a2.x, geo.a2.y, geo.b2.x, geo.b2.y) <= HIT_PX;
+  },
+  handleIndices: () => [0, 1, 2],
+};
+
+// Exported for the same reason FIB_LEVELS is - one shared source of truth
+// for these ratios rather than a second copy anywhere that needs them.
+export const FIB_EXTENSION_LEVELS = [0, 0.618, 1.0, 1.272, 1.618, 2.0, 2.618];
+
+function fibExtensionGeometry(scale: DrawScale, obj: DrawingObject) {
+  const pts = obj.points.map((p) => scale.toPx(p.time, p.price));
+  if (pts.length < 3 || pts.some((p) => !p)) return null;
+  const [pA, pB, pC] = obj.points;
+  const [a, b, c] = pts as PixelPoint[];
+  const range = pB.price - pA.price; // signed - direction of the A->B swing
+  const x0 = c.x;
+  const x1 = c.x + (b.x - a.x); // project the same horizontal span forward from C
+  return { basePrice: pC.price, range, x0, x1 };
+}
+
+const fibextension: DrawingKind = {
+  type: "fibextension",
+  label: "Fib Extension",
+  pointCount: 3,
+  defaultStyle: { color: "#d4a24e", lineWidth: 1 },
+  render(ctx, scale, obj) {
+    const geo = fibExtensionGeometry(scale, obj);
+    if (!geo) {
+      // 2-point preview (A, B placed - C still following the cursor): just
+      // show the swing baseline, same degrade-gracefully approach triangle
+      // and the channel tools use.
+      const pts = obj.points.map((p) => scale.toPx(p.time, p.price)).filter((p): p is PixelPoint => p != null);
+      if (pts.length < 2) return;
+      ctx.strokeStyle = obj.style.color;
+      ctx.lineWidth = obj.style.lineWidth;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      ctx.lineTo(pts[1].x, pts[1].y);
+      ctx.stroke();
+      return;
+    }
+    const x0 = Math.min(geo.x0, geo.x1);
+    const x1 = Math.max(geo.x0, geo.x1);
+    FIB_EXTENSION_LEVELS.forEach((f) => {
+      const price = geo.basePrice + f * geo.range;
+      const y = scale.y(price);
+      if (y == null) return;
+      const isKey = f === 1.0 || f === 1.618;
+      ctx.strokeStyle = isKey ? "#d4a24e" : "rgba(150,160,180,0.55)";
+      ctx.lineWidth = isKey ? 2 : 1;
+      if (!isKey) ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = isKey ? "#d4a24e" : "rgba(150,160,180,0.8)";
+      ctx.font = "9px 'IBM Plex Mono', monospace";
+      ctx.fillText(`${(f * 100).toFixed(1)}%`, x1 + 4, y + 3);
+    });
+  },
+  hitTest(scale, obj, x, y) {
+    const geo = fibExtensionGeometry(scale, obj);
+    if (!geo) return false;
+    const x0 = Math.min(geo.x0, geo.x1);
+    const x1 = Math.max(geo.x0, geo.x1);
+    const prices = FIB_EXTENSION_LEVELS.map((f) => geo.basePrice + f * geo.range);
+    const ys = prices.map((p) => scale.y(p)).filter((v): v is number => v != null);
+    if (ys.length === 0) return false;
+    return pointInRect(x, y, x0, Math.min(...ys), x1, Math.max(...ys), 4);
+  },
+  handleIndices: () => [0, 1, 2],
+};
+
+const pricerange: DrawingKind = {
+  type: "pricerange",
+  label: "Price Range",
+  pointCount: 2,
+  defaultStyle: DEFAULT_STYLE,
+  render(ctx, scale, obj) {
+    const bounds = rectBounds(scale, obj);
+    if (!bounds) return;
+    const [p1, p2] = obj.points;
+    const { x0, x1, y0, y1 } = bounds;
+    const up = p2.price >= p1.price;
+    const baseColor = up ? "#26a69a" : "#ef5350";
+    const opacity = typeof obj.props.fillOpacity === "number" ? (obj.props.fillOpacity as number) : 0.14;
+    ctx.fillStyle = withAlpha(baseColor, opacity);
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.strokeStyle = baseColor;
+    ctx.lineWidth = obj.style.lineWidth;
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    const delta = p2.price - p1.price;
+    const pct = p1.price !== 0 ? (delta / p1.price) * 100 : 0;
+    ctx.fillStyle = baseColor;
+    ctx.font = "10px 'IBM Plex Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(`${delta >= 0 ? "+" : ""}${delta.toFixed(5)}  (${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)`, (x0 + x1) / 2, y0 - 6);
+    ctx.textAlign = "left";
+  },
+  hitTest(scale, obj, x, y) {
+    const bounds = rectBounds(scale, obj);
+    if (!bounds) return false;
+    return pointInRect(x, y, bounds.x0, bounds.y0, bounds.x1, bounds.y1, 4);
+  },
+  handleIndices: () => [0, 1],
+  resizeHandles: rectResizeHandles,
+};
+
+const daterange: DrawingKind = {
+  type: "daterange",
+  label: "Date Range",
+  pointCount: 2,
+  defaultStyle: DEFAULT_STYLE,
+  render(ctx, scale, obj) {
+    const [p1, p2] = obj.points;
+    const x0raw = scale.x(p1.time);
+    const x1raw = scale.x(p2.time);
+    if (x0raw == null || x1raw == null) return;
+    const x0 = Math.min(x0raw, x1raw);
+    const x1 = Math.max(x0raw, x1raw);
+    const opacity = typeof obj.props.fillOpacity === "number" ? (obj.props.fillOpacity as number) : 0.08;
+    ctx.fillStyle = withAlpha(obj.style.color, opacity);
+    ctx.fillRect(x0, 0, x1 - x0, scale.height);
+    ctx.strokeStyle = obj.style.color;
+    ctx.lineWidth = obj.style.lineWidth;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x0, 0);
+    ctx.lineTo(x0, scale.height);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x1, 0);
+    ctx.lineTo(x1, scale.height);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const seconds = Math.abs(p2.time - p1.time);
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const label = days > 0 ? `${days}d ${hours}h` : `${hours}h ${Math.floor((seconds % 3600) / 60)}m`;
+    ctx.fillStyle = obj.style.color;
+    ctx.font = "10px 'IBM Plex Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(label, (x0 + x1) / 2, 14);
+    ctx.textAlign = "left";
+  },
+  hitTest(scale, obj, x, _y) {
+    const [p1, p2] = obj.points;
+    const x0raw = scale.x(p1.time);
+    const x1raw = scale.x(p2.time);
+    if (x0raw == null || x1raw == null) return false;
+    const x0 = Math.min(x0raw, x1raw);
+    const x1 = Math.max(x0raw, x1raw);
+    return x >= x0 - 4 && x <= x1 + 4;
+  },
+  handleIndices: () => [0, 1],
+  handlePixel(idx, obj, scale) {
+    const x = scale.x(obj.points[idx].time);
+    return x == null ? null : { x, y: scale.height / 2 };
+  },
+};
+
+/** Shared by brush/highlighter - the two freehand tools. `pointCount` is
+ * Infinity as a marker value: DrawingLayer never reaches its normal
+ * click-N-times completion check (`points.length >= kind.pointCount`) for
+ * these two - they're placed through a dedicated
+ * mousedown/mousemove-drag/mouseup path instead (see DrawingLayer.tsx's
+ * freehand branch), so this value is never actually compared against
+ * anything at runtime; it exists so `pointCount` stays a required, always-
+ * meaningful field on every DrawingKind rather than becoming optional just
+ * for these two. No resizeHandles/constrainPoint and an empty
+ * handleIndices - a freehand stroke is moved as a whole (already fully
+ * generic in DrawingLayer's drag handling for any points-array length),
+ * never resized or per-point-dragged. */
+function freehandKind(type: "brush" | "highlighter", label: string, defaultStyle: DrawingStyle, alpha: number): DrawingKind {
+  return {
+    type,
+    label,
+    pointCount: Number.POSITIVE_INFINITY,
+    defaultStyle,
+    render(ctx, scale, obj) {
+      const pts = obj.points.map((p) => scale.toPx(p.time, p.price)).filter((p): p is PixelPoint => p != null);
+      if (pts.length < 2) return;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = obj.style.color;
+      ctx.lineWidth = obj.style.lineWidth;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+      ctx.restore();
+    },
+    hitTest(scale, obj, x, y) {
+      const pts = obj.points.map((p) => scale.toPx(p.time, p.price)).filter((p): p is PixelPoint => p != null);
+      return distToPolyline(x, y, pts) <= HIT_PX + obj.style.lineWidth;
+    },
+    handleIndices: () => [],
+  };
+}
+
 export const DRAWING_KINDS: Record<DrawingType, DrawingKind> = {
   trendline,
   hline,
@@ -539,6 +1055,18 @@ export const DRAWING_KINDS: Record<DrawingType, DrawingKind> = {
   bosbear: marketStructureKind("bosbear", "Bearish BOS", "BOS ↓", "#42a5f5"),
   chochbull: marketStructureKind("chochbull", "Bullish CHoCH", "CHoCH ↑", "#e0a64c"),
   chochbear: marketStructureKind("chochbear", "Bearish CHoCH", "CHoCH ↓", "#e0a64c"),
+  text,
+  arrow,
+  circle,
+  ellipse,
+  triangle,
+  parallelchannel,
+  fibextension,
+  fibchannel,
+  pricerange,
+  daterange,
+  brush: freehandKind("brush", "Brush", DEFAULT_STYLE, 1),
+  highlighter: freehandKind("highlighter", "Highlighter", { color: "#ffd54f", lineWidth: 3 }, 0.35),
 };
 
 export const HANDLE_RADIUS = 4;

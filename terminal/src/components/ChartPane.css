@@ -15,6 +15,64 @@
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
   font-size: 11px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pane-header::-webkit-scrollbar {
+  display: none;
+}
+
+.pane-ohlc {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.pane-ohlc-item {
+  color: var(--text-faint);
+}
+
+.pane-ohlc-item b {
+  margin-left: 3px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pane-ohlc .pos {
+  color: var(--ok);
+}
+
+.pane-ohlc .neg {
+  color: var(--danger);
+}
+
+.pane-indicator-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.pane-indicator-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
 }
 
 .pane-header select {

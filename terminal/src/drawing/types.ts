@@ -19,6 +19,12 @@ export interface DrawingPoint {
 // bullish-vs-bearish that never involves the platform guessing anything
 // about the user's own market-structure read (same reasoning "long"/
 // "short" already use two types instead of one position type + a side prop).
+// Phase 3 additions (text/arrow/circle/.../highlighter): brand-new tools,
+// not ports of prior behavior - see kinds.ts for each one's DrawingKind and
+// src/drawing/primitives/ for its ISeriesPrimitive. `brush`/`highlighter`
+// are the two freehand types (arbitrary-length `points`, not placed via the
+// click-N-times flow every other kind uses) - see DrawingLayer.tsx's
+// freehand mousedown/mousemove/mouseup branch.
 export type DrawingType =
   | "trendline"
   | "hline"
@@ -31,7 +37,19 @@ export type DrawingType =
   | "bosbull"
   | "bosbear"
   | "chochbull"
-  | "chochbear";
+  | "chochbear"
+  | "text"
+  | "arrow"
+  | "circle"
+  | "ellipse"
+  | "triangle"
+  | "parallelchannel"
+  | "fibextension"
+  | "fibchannel"
+  | "pricerange"
+  | "daterange"
+  | "brush"
+  | "highlighter";
 
 export interface DrawingStyle {
   color: string;

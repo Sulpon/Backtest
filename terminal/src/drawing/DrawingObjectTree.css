@@ -1,0 +1,56 @@
+.object-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.object-tree-row:hover {
+  background: var(--bg-hover);
+}
+
+.object-tree-row.active {
+  background: var(--accent-soft);
+}
+
+.object-tree-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.object-tree-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.object-tree-icon {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.object-tree-icon:hover {
+  color: var(--text);
+}
+
+.object-tree-delete {
+  font-size: 14px;
+}
+
+.object-tree-delete:hover {
+  color: var(--danger);
+}

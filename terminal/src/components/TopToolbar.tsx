@@ -10,6 +10,13 @@ import type { Timeframe } from "../data/types";
 import { useSymbols } from "../data/useSymbols";
 import "./TopToolbar.css";
 
+type ChartType = "candles" | "line" | "area";
+const CHART_TYPES: { id: ChartType; glyph: string; label: string }[] = [
+  { id: "candles", glyph: "▤", label: "Candles" },
+  { id: "line", glyph: "╱", label: "Line" },
+  { id: "area", glyph: "◭", label: "Area" },
+];
+
 export function TopToolbar() {
   const ws = useActiveWorkspace();
   const setWorkspaceSymbol = useWorkspaceStore((s) => s.setSymbol);
@@ -119,6 +126,49 @@ export function TopToolbar() {
     });
   }
 
+  // Visually present per the target TradingView-style toolbar, deliberately
+  // NOT wired to the chart yet - switching series type touches the
+  // candlestick series' reference identity, which every attached drawing
+  // primitive and the swing/BOS marker plugin key off of. That's a real,
+  // separate, testable change; folding it into a UI-only redesign risks
+  // regressing the drawing-primitive system the last 3 phases verified.
+  // Same honest "visible, armable-looking, but tells you it's not built
+  // yet" pattern already established for placeholder drawing tools (see
+  // LeftToolRail.tsx's pickTool()).
+  const [chartType, setChartTypeLocal] = useState<ChartType>("candles");
+  function pickChartType(type: ChartType) {
+    if (type === "candles") {
+      setChartTypeLocal(type);
+      return;
+    }
+    setHint(`${CHART_TYPES.find((c) => c.id === type)?.label} chart type isn't wired up yet - Candles only for now`);
+  }
+
+  // Fullscreen is plain browser API, no app state of its own to own - this
+  // only mirrors document.fullscreenElement so the button's active state
+  // stays correct when the user exits via Esc (browser-native), not just
+  // via this button.
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    function onFullscreenChange() {
+      setIsFullscreen(!!document.fullscreenElement);
+    }
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+  function toggleFullscreen() {
+    // Both are real rejecting Promises, not fire-and-forget calls - the
+    // Fullscreen API rejects (a real, reproducible case, not hypothetical)
+    // when the request wasn't triggered by a trusted user gesture, or when
+    // a permissions policy denies it (e.g. an iframe without
+    // allow="fullscreen"). Uncaught, that surfaces as an unhandled promise
+    // rejection in the console; caught here and surfaced the same way
+    // every other "can't do that right now" case in this toolbar already
+    // is (setHint), rather than crashing or silently doing nothing.
+    const request = document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+    request.catch(() => setHint("Fullscreen isn't available right now (blocked by the browser or an embedding policy)"));
+  }
+
   return (
     <div className="topbar">
       <div className="tb-group">
@@ -149,6 +199,19 @@ export function TopToolbar() {
               onClick={() => handleTimeframeChange(tf)}
             >
               {TIMEFRAME_LABELS[tf]}
+            </button>
+          ))}
+        </div>
+        <div className="tb-tf tb-chart-type">
+          {CHART_TYPES.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              className={c.id === chartType ? "active" : ""}
+              title={c.id === "candles" ? "Candlestick chart" : `${c.label} chart - coming soon`}
+              onClick={() => pickChartType(c.id)}
+            >
+              {c.glyph}
             </button>
           ))}
         </div>
@@ -245,20 +308,20 @@ export function TopToolbar() {
         </button>
         <button
           type="button"
+          className={`tb-btn${analysisHubOpen ? " active" : ""}`}
+          title="Indicators & SMC overlays"
+          onClick={() => setAnalysisHubOpen(!analysisHubOpen)}
+        >
+          <span className="tb-glyph">Ω</span>
+        </button>
+        <button
+          type="button"
           className={`tb-btn${watchlistOpen ? " active" : ""}`}
-          title={watchlistOpen ? "Hide Watchlist" : "Show Watchlist"}
+          title={watchlistOpen ? "Hide docked Watchlist panel" : "Show docked Watchlist panel (also always available in the right sidebar)"}
           disabled={!dockviewApi}
           onClick={toggleWatchlist}
         >
           <span className="tb-glyph">☰</span>
-        </button>
-        <button
-          type="button"
-          className={`tb-btn${analysisHubOpen ? " active" : ""}`}
-          title="Analysis"
-          onClick={() => setAnalysisHubOpen(!analysisHubOpen)}
-        >
-          <span className="tb-glyph">Ω</span>
         </button>
         <button
           type="button"
@@ -278,6 +341,14 @@ export function TopToolbar() {
           onClick={() => setSettingsOpen(!settingsOpen)}
         >
           <span className="tb-glyph">⚙</span>
+        </button>
+        <button
+          type="button"
+          className={`tb-btn${isFullscreen ? " active" : ""}`}
+          title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          onClick={toggleFullscreen}
+        >
+          <span className="tb-glyph">{isFullscreen ? "⤢" : "⛶"}</span>
         </button>
       </div>
     </div>

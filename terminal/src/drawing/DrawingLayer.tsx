@@ -12,6 +12,10 @@ import { getModifierKeys, setActivePaneKey, getActivePaneKey } from "./interacti
 import { StyleInspector } from "./StyleInspector";
 import { MarketStructureInspector } from "../marketStructure/MarketStructureInspector";
 import { DrawingContextMenu, type ContextMenuState } from "./DrawingContextMenu";
+import { TextEditOverlay } from "./TextEditOverlay";
+import { useRectanglePrimitives } from "./primitives/useRectanglePrimitives";
+import { useDrawingPrimitives, PRIMITIVE_MIGRATED_TYPES } from "./primitives/useDrawingPrimitives";
+import { isRectanglePrimitiveEnabled, isDrawingPrimitivesEnabled } from "./primitives/featureFlag";
 import "./DrawingLayer.css";
 
 interface DragState {
@@ -41,10 +45,32 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
   const pendingRef = useRef<{ type: DrawingType; points: DrawingObject["points"] } | null>(null);
   const hoverPxRef = useRef<{ x: number; y: number } | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  // Phase 3's brush/highlighter: a drag-to-draw gesture, not the click-N-
+  // times flow every other tool uses (see the dedicated mousedown branch
+  // below) - lastPx is in CLIENT pixels purely to threshold how often a
+  // point gets appended during the drag, independent of any data-space
+  // conversion.
+  const freehandRef = useRef<{ type: "brush" | "highlighter"; points: DrawingObject["points"]; lastPx: { x: number; y: number } } | null>(null);
 
   const [selectedIds, setSelectedIdsState] = useState<string[]>([]);
   const selectedIdsRef = useRef<string[]>([]);
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  // Phase 3's `text` tool - which drawing (if any) currently has its DOM
+  // edit overlay open (see TextEditOverlay.tsx). Set immediately after a
+  // new text object is placed, and by double-clicking an existing one.
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+
+  // Phase 1 rectangle-primitive rollout (see primitives/featureFlag.ts) -
+  // no-ops entirely while the flag is off. When on, this attaches one
+  // ISeriesPrimitive per rectangle DrawingObject in this pane; the render
+  // loop below then skips this canvas's own body-fill for rectangles so
+  // the primitive is the only thing drawing them (selection handles still
+  // draw here regardless, same as every other tool).
+  useRectanglePrimitives(chart, series, paneKey);
+  // Phase 2: the other 11 live tools (see primitives/featureFlag.ts's
+  // isDrawingPrimitivesEnabled - a separate flag from rectangle's, so each
+  // batch can be rolled back independently). Same no-op-when-off contract.
+  useDrawingPrimitives(chart, series, paneKey);
 
   function setSelection(ids: string[]) {
     selectedIdsRef.current = ids;
@@ -60,6 +86,26 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
       : [...selectedIdsRef.current, id];
     setSelection(ids);
   }
+
+  // DrawingObjectTree (the right-sidebar panel) selects a drawing by
+  // calling useDrawingStore.getState().select(id) directly, since it has
+  // no access to this component's own setSelection() closure above -
+  // without mirroring that back in, selectedIdsRef/selectedIdsState (the
+  // actual source of truth this component uses for hit-testing, dragging,
+  // and the Delete/Ctrl+D/Ctrl+Z keyboard handlers) stayed stale, so a
+  // selection made from the sidebar looked right (the row highlighted,
+  // StyleInspector opened) but couldn't be dragged, deleted, or undone.
+  // Content-compares before syncing so this is a no-op on the normal path
+  // (this component's own setSelection already keeps both in sync itself).
+  useEffect(() => {
+    return useDrawingStore.subscribe((state) => {
+      const ids = state.selectedIds;
+      const current = selectedIdsRef.current;
+      if (ids.length === current.length && ids.every((id, i) => id === current[i])) return;
+      selectedIdsRef.current = ids;
+      setSelectedIdsState(ids);
+    });
+  }, []);
 
   function buildScale(width: number, height: number): DrawScale {
     const x = (t: number) => chart.timeScale().timeToCoordinate(t as Time);
@@ -151,7 +197,15 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
       drawings.forEach((obj) => {
         const kind = DRAWING_KINDS[obj.type];
         if (!kind) return;
-        kind.render(ctx, scale, obj);
+        // A primitive (when its flag is enabled) draws the body on the
+        // chart's own canvas, underneath this overlay - skip the redundant
+        // canvas-body draw here so it isn't painted twice. Handles/lock
+        // icon below are unaffected: they're this canvas's job regardless
+        // of which renderer drew the body.
+        const bodyDrawnByPrimitive =
+          (obj.type === "rectangle" && isRectanglePrimitiveEnabled()) ||
+          (PRIMITIVE_MIGRATED_TYPES.has(obj.type) && isDrawingPrimitivesEnabled());
+        if (!bodyDrawnByPrimitive) kind.render(ctx, scale, obj);
         if (selectedIdsRef.current.includes(obj.id)) {
           ctx.save();
           ctx.strokeStyle = SELECT_COLOR;
@@ -209,6 +263,30 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
           ctx.restore();
         }
       }
+
+      // live preview of an in-progress brush/highlighter stroke - same
+      // render loop, same kind.render() call every other preview above
+      // uses, just fed from freehandRef instead of pendingRef. No second
+      // loop, no extra rAF - satisfies the "don't reintroduce a permanent
+      // animation loop just for previews" requirement by not introducing
+      // one at all (this is the one loop every tool's preview already
+      // shares).
+      const freehand = freehandRef.current;
+      if (freehand && freehand.points.length >= 2) {
+        const previewObj: DrawingObject = {
+          id: "__preview__",
+          type: freehand.type,
+          points: freehand.points,
+          style: { ...DEFAULT_STYLE, ...DRAWING_KINDS[freehand.type].defaultStyle },
+          props: {},
+          locked: false,
+          hidden: false,
+          zIndex: 0,
+          createdAt: 0,
+          updatedAt: 0,
+        };
+        DRAWING_KINDS[freehand.type].render(ctx, scale, previewObj);
+      }
     }
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
@@ -218,7 +296,11 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
   // ---- pointer interaction ----
   useEffect(() => {
     function onMouseMoveHover(e: MouseEvent) {
-      if (e.target instanceof HTMLElement && (e.target.closest(".style-inspector") || e.target.closest(".drawing-context-menu"))) return;
+      if (
+        e.target instanceof HTMLElement &&
+        (e.target.closest(".style-inspector") || e.target.closest(".drawing-context-menu") || e.target.closest(".text-edit-overlay"))
+      )
+        return;
       const rect = containerEl.getBoundingClientRect();
       hoverPxRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
       setActivePaneKey(paneKeyRef.current);
@@ -313,16 +395,84 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
       window.addEventListener("mouseup", onWindowMouseUp);
     }
 
+    // ---- brush/highlighter freehand drag-to-draw ----
+    // A fundamentally different placement gesture from every other tool's
+    // click-N-times flow (see kinds.ts's `freehandKind` doc comment on why
+    // pointCount is a marker Infinity, never actually compared against
+    // here) - mousedown starts capturing points, mousemove appends them
+    // (throttled by on-screen pixel distance so a slow, careful stroke
+    // doesn't balloon the points array), mouseup finalizes into one
+    // DrawingObject. Deliberately NOT run through snapPoint()/magnet - a
+    // freehand stroke is meant to be exactly where the pointer moved, not
+    // snapped to candle OHLC values.
+    const FREEHAND_MIN_PX = 3;
+
+    function onFreehandMouseMove(e: MouseEvent) {
+      const fh = freehandRef.current;
+      if (!fh) return;
+      const dx = e.clientX - fh.lastPx.x;
+      const dy = e.clientY - fh.lastPx.y;
+      if (Math.hypot(dx, dy) < FREEHAND_MIN_PX) return;
+      const data = pixelToData(e.clientX, e.clientY);
+      if (!data) return;
+      fh.points.push(data);
+      fh.lastPx = { x: e.clientX, y: e.clientY };
+    }
+
+    function onFreehandMouseUp() {
+      const fh = freehandRef.current;
+      freehandRef.current = null;
+      window.removeEventListener("mousemove", onFreehandMouseMove);
+      window.removeEventListener("mouseup", onFreehandMouseUp);
+      if (!fh || fh.points.length < 2) return; // a stray click, not a real stroke - discard rather than store a 1-point "brush"
+      const key = paneKeyRef.current;
+      const kind = DRAWING_KINDS[fh.type];
+      const drawings = useDrawingStore.getState().getDrawings(key);
+      const maxZ = drawings.reduce((m, d) => Math.max(m, d.zIndex), 0);
+      const now = Date.now();
+      const obj: DrawingObject = {
+        id: "d" + now.toString(36) + Math.random().toString(36).slice(2, 7),
+        type: fh.type,
+        points: fh.points,
+        style: { ...DEFAULT_STYLE, ...kind.defaultStyle },
+        props: {},
+        locked: false,
+        hidden: false,
+        zIndex: maxZ + 1,
+        createdAt: now,
+        updatedAt: now,
+      };
+      useDrawingStore.getState().mutate(key, (ds) => [...ds, obj]);
+      select(obj.id);
+      if (!useUiStore.getState().toolLocked) useUiStore.getState().setActiveTool("cursor");
+    }
+
     function onMouseDownCapture(e: MouseEvent) {
       if (e.button !== 0) return;
       // Clicks on our own UI chrome (style inspector, context menu) aren't
       // chart interactions - let them proceed untouched.
-      if (e.target instanceof HTMLElement && (e.target.closest(".style-inspector") || e.target.closest(".drawing-context-menu"))) return;
+      if (
+        e.target instanceof HTMLElement &&
+        (e.target.closest(".style-inspector") || e.target.closest(".drawing-context-menu") || e.target.closest(".text-edit-overlay"))
+      )
+        return;
       setMenu(null);
       const rect = containerEl.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
       const tool = useUiStore.getState().activeToolId as DrawingType;
+
+      if (tool === "brush" || tool === "highlighter") {
+        e.stopPropagation();
+        e.preventDefault();
+        const data = pixelToData(e.clientX, e.clientY);
+        if (!data) return;
+        freehandRef.current = { type: tool, points: [data], lastPx: { x: e.clientX, y: e.clientY } };
+        window.addEventListener("mousemove", onFreehandMouseMove);
+        window.addEventListener("mouseup", onFreehandMouseUp);
+        return;
+      }
+
       const kind = DRAWING_KINDS[tool];
       const key = paneKeyRef.current;
       const modifiers = getModifierKeys();
@@ -366,6 +516,11 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
           useDrawingStore.getState().mutate(key, (ds) => [...ds, obj]);
           pendingRef.current = null;
           select(obj.id);
+          // Text is placed empty (one click) and needs its content typed in
+          // immediately - opening the edit overlay right away, rather than
+          // requiring a separate double-click, matches every other "place
+          // then type" text tool's UX (word processors, other chart apps).
+          if (tool === "text") setEditingTextId(obj.id);
           if (!useUiStore.getState().toolLocked) useUiStore.getState().setActiveTool("cursor");
           else useUiStore.getState().setStatusHint(`${kind.label} placed - tool stays active`);
         } else {
@@ -431,7 +586,11 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
     }
 
     function onContextMenu(e: MouseEvent) {
-      if (e.target instanceof HTMLElement && (e.target.closest(".style-inspector") || e.target.closest(".drawing-context-menu"))) return;
+      if (
+        e.target instanceof HTMLElement &&
+        (e.target.closest(".style-inspector") || e.target.closest(".drawing-context-menu") || e.target.closest(".text-edit-overlay"))
+      )
+        return;
       const rect = containerEl.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
@@ -445,15 +604,39 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
       setMenu({ x: e.clientX, y: e.clientY, ids: selectedIdsRef.current.includes(hit.id) ? selectedIdsRef.current : [hit.id] });
     }
 
+    // Double-click an existing `text` drawing (only while no tool is armed -
+    // otherwise this would fight with placing a brand-new drawing) to
+    // reopen its edit overlay. Every other tool has no double-click
+    // behavior of its own here.
+    function onDblClick(e: MouseEvent) {
+      if (e.target instanceof HTMLElement && (e.target.closest(".style-inspector") || e.target.closest(".drawing-context-menu") || e.target.closest(".text-edit-overlay")))
+        return;
+      const tool = useUiStore.getState().activeToolId;
+      if (DRAWING_KINDS[tool as DrawingType]) return;
+      const rect = containerEl.getBoundingClientRect();
+      const hit = hitTestAll(e.clientX - rect.left, e.clientY - rect.top);
+      if (!hit) return;
+      const obj = currentDrawings().find((d) => d.id === hit.id);
+      if (obj && obj.type === "text" && !obj.locked) {
+        e.preventDefault();
+        select(obj.id);
+        setEditingTextId(obj.id);
+      }
+    }
+
     containerEl.addEventListener("mousedown", onMouseDownCapture, { capture: true });
     containerEl.addEventListener("mousemove", onMouseMoveHover);
     containerEl.addEventListener("contextmenu", onContextMenu);
+    containerEl.addEventListener("dblclick", onDblClick);
     return () => {
       containerEl.removeEventListener("mousedown", onMouseDownCapture, { capture: true });
       containerEl.removeEventListener("mousemove", onMouseMoveHover);
       containerEl.removeEventListener("contextmenu", onContextMenu);
+      containerEl.removeEventListener("dblclick", onDblClick);
       window.removeEventListener("mousemove", onWindowMouseMove);
       window.removeEventListener("mouseup", onWindowMouseUp);
+      window.removeEventListener("mousemove", onFreehandMouseMove);
+      window.removeEventListener("mouseup", onFreehandMouseUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerEl, chart, series]);
@@ -466,9 +649,11 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
       const key = paneKeyRef.current;
       if (e.key === "Escape") {
         pendingRef.current = null;
+        freehandRef.current = null; // in-progress brush/highlighter drag, if any - onFreehandMouseUp treats this as a stray click and discards it
         useUiStore.getState().setActiveTool("cursor");
         select(null);
         setMenu(null);
+        setEditingTextId(null);
         return;
       }
       // Everything below acts on a specific pane's drawings - only the pane
@@ -496,8 +681,10 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
   // deselect + clear in-progress placement when the pane's data identity changes
   useEffect(() => {
     pendingRef.current = null;
+    freehandRef.current = null;
     select(null);
     setMenu(null);
+    setEditingTextId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paneKey]);
 
@@ -508,6 +695,9 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
         <StyleInspector paneKey={paneKey} selectedIds={selectedIds} onDeselect={() => select(null)} />
       )}
       <MarketStructureInspector paneKey={paneKey} selectedIds={selectedIds} />
+      {editingTextId && (
+        <TextEditOverlay paneKey={paneKey} chart={chart} series={series} drawingId={editingTextId} onClose={() => setEditingTextId(null)} />
+      )}
       {menu && (
         <DrawingContextMenu
           state={menu}

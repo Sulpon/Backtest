@@ -23,6 +23,41 @@ export function pointInRect(px: number, py: number, x0: number, y0: number, x1: 
   return px >= left && px <= right && py >= top && py <= bottom;
 }
 
+/** Phase 3's `triangle` tool - standard sign-of-cross-product test, no
+ * external deps. Winding-order-independent (works for either CW or CCW
+ * vertex order, which the 3-point click-to-place flow doesn't control). */
+export function pointInTriangle(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number
+): boolean {
+  const d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
+  const d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
+  const d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
+  const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
+  const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
+  return !(hasNeg && hasPos);
+}
+
+/** Phase 3's `brush`/`highlighter` freehand tools - nearest distance from
+ * (px,py) to any segment of an arbitrary-length pixel polyline. Used for
+ * hit-testing instead of distToSegment (which only handles one segment). */
+export function distToPolyline(px: number, py: number, points: PixelPoint[]): number {
+  if (points.length === 0) return Infinity;
+  if (points.length === 1) return Math.hypot(px - points[0].x, py - points[0].y);
+  let min = Infinity;
+  for (let i = 0; i < points.length - 1; i++) {
+    const d = distToSegment(px, py, points[i].x, points[i].y, points[i + 1].x, points[i + 1].y);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
 /** Snaps a raw chart time to the exact time of its nearest bar - drawings
  * always anchor to real candles rather than floating between them, magnet
  * on or off. With the magnet ON, price is ALSO snapped to whichever of that

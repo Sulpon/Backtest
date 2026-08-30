@@ -1,6 +1,8 @@
 import { TopToolbar } from "./TopToolbar";
 import { LeftToolRail } from "./LeftToolRail";
 import { DockviewRoot } from "./DockviewRoot";
+import { RightSidebar } from "./RightSidebar";
+import { BottomPanel } from "./BottomPanel";
 import { StatusBar } from "./StatusBar";
 import { AnalysisHub } from "../analysis/AnalysisHub";
 import { MarketStructureDatasetPanel } from "../marketStructure/MarketStructureDatasetPanel";
@@ -26,7 +28,9 @@ export function AppShell() {
         {/* keyed on workspace name so switching workspaces remounts the dock
             surface and restores that workspace's own saved layout cleanly */}
         <DockviewRoot key={activeWorkspace} />
+        <RightSidebar />
       </div>
+      <BottomPanel />
       <StatusBar />
       <AnalysisHub />
       <MarketStructureDatasetPanel />

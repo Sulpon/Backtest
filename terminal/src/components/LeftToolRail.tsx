@@ -24,6 +24,18 @@ export const PLACEMENT_HINTS: Record<string, string> = {
   fibretracement: "Click the swing high (or low), then the other end",
   long: "Click the entry point, then the stop-loss level",
   short: "Click the entry point, then the stop-loss level",
+  text: "Click to place the label, then type",
+  arrow: "Click the start point, then the tip",
+  circle: "Click the center, then drag out the edge",
+  ellipse: "Click one corner, then the opposite corner",
+  triangle: "Click each of the three corners",
+  parallelchannel: "Click the baseline's two ends, then the channel width",
+  fibextension: "Click the swing start, the swing end, then the retracement point",
+  fibchannel: "Click the baseline's two ends, then the channel width",
+  pricerange: "Click the start point, then the end point",
+  daterange: "Click the start point, then the end point",
+  brush: "Click and drag to draw",
+  highlighter: "Click and drag to draw",
 };
 
 export function pickTool(tool: ToolDef, setActiveTool: (id: string, hint?: string | null) => void) {

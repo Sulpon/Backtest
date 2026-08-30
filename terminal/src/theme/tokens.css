@@ -114,6 +114,9 @@ html[data-theme="light"] {
   --topbar-h: 44px;
   --statusbar-h: 24px;
   --rail-w: 44px;
+  --sidebar-w: 280px;
+  --sidebar-w-collapsed: 44px;
+  --bottompanel-h: 260px;
 }
 
 *,
