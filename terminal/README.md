@@ -343,6 +343,156 @@ anything riskier.
   the added complexity (and bar_index re-indexing risk across replay/Pine/
   market-structure logging) not worth it at this data scale (100k bars).
 
+### Phase 2 (V2 request follow-up - real remaining gaps only)
+
+A later request asked for a further performance/UI pass. Investigation
+found most of the request was already covered by Phase 1 above - the
+request's own baseline numbers (2.9s load, 20.3s Pine, gzip level 9)
+matched this document's *pre-fix* state, not current production. Phase 2
+scoped itself to the four items that were genuinely still gaps, confirmed
+by reading the code directly rather than assuming:
+
+| Item | Before | After |
+|---|---|---|
+| Pine indicator, first compute (smc.pine, ~100k bars), `interp.run()` | ~21.75s (median of 4) | **no change - kept**, see below |
+| Same, via `compiler.ts`'s `runCompiled()` (compiled-closures path) | n/a - untested in production | ~22.03s (median of 4) - **not faster, reverted** |
+| Persistent Pine cache key collision risk (`datasetVersion`) | `length:firstTime:lastTime` only - same-shape/different-content datasets could collide | length+endpoints+32-sample content hash - collision case closed |
+| Cold page load, previously-visited symbol/timeframe | always a network re-fetch of the full dataset | IndexedDB disk-cache read available first (~113-120ms write, ~223-263ms read for the real ~8.4MB EURUSD/1h fixture, measured via `fake-indexeddb` in a Node test harness - real-browser IndexedDB numbers may differ somewhat but are unlikely to be slower) |
+| `/api/quotes` duplicate requests | already fixed in Phase 1 | reconfirmed: exactly one call site (`DataLayer.ts`'s `getQuotes()`), no regression found |
+
+**Important negative result, reported as measured rather than assumed:**
+this phase attempted to wire `compiler.ts`'s existing (but previously
+unused-in-production) `runCompiled()` compiled-closures execution path
+into `pine.worker.ts`, since this document's own Phase-1 "deliberately not
+done" section estimated it as the largest remaining lever (25-35%+). A
+real benchmark against the actual `smc.pine` script over the actual
+~100,000-bar EURUSD/1h dataset (4 trials each, byte-identical output
+confirmed) found **no measurable speedup** - `runCompiled()` measured
+~22.03s vs. `interp.run()`'s ~21.75s, within noise. The change was
+reverted; `pine.worker.ts` still uses `interp.run()`. This means the
+20s-class Pine calculation time for smc.pine-scale scripts is **unchanged**
+by this phase - closing it further needs the genuinely riskier levers
+(bounding per-variable history arrays, a sliding-window `ta.highest`/
+`ta.lowest`, or real incremental/resume-from-last-bar execution) already
+flagged above as needing their own dedicated, reviewed pass.
+
+**What changed:**
+
+1. **`pine.worker.ts`** - added an in-worker AST cache (`Map<source string,
+   parsed AST>`, capped at 20 entries) so switching symbol/timeframe with
+   the same indicator script attached no longer re-tokenizes/re-parses
+   identical source on every request. Extracted the request-handling logic
+   into an exported `handleWorkerRequest()` for direct unit testing.
+2. **`pineFingerprint.ts`** - `datasetVersion` now includes a 32-sample
+   content hash over close prices (fixed O(1) cost regardless of dataset
+   size), closing the collision case above.
+3. **`dataLayerIndexedDbCache.ts`** (new) - persists full raw OHLC
+   datasets across page reloads, mirroring `pineIndexedDbCache.ts`'s
+   pattern (own IndexedDB database, LRU eviction at 6 entries, a soft
+   7-day staleness check). Wired into `DataLayer.ts`'s `getSymbolData()`
+   (write) and a new `getCachedSymbolDataFromDisk()` method (read, called
+   from `ChartPane.tsx`'s fetch effect). Always superseded by the real
+   network fetch when it lands; never treated as equivalent to a
+   network-verified result for replay/stats/market-structure logging.
+4. **Verified, not re-fixed:** `/api/quotes` deduplication and the gzip
+   level-4 setting from Phase 1 were re-confirmed still correct, not
+   touched.
+
+Zero backend files changed in this phase. Zero changes to `/api/dataset`,
+`/api/symbols`, or `/api/quotes` response shapes. Zero changes to
+`interpreter.ts`'s public API.
+
+### Pine interpreter - Phase 2 (real profiling, one verified win)
+
+A follow-up request asked specifically to reduce `interp.run()`'s ~21.75s
+cost for `smc.pine`/100k bars, not just hide it behind caching. Per the
+user's explicit instructions, this was profile-first: a fresh CPU profile
+of the CURRENT interpreter (post Phase 1's `identCache`/`callCache`/
+`resolveArgs`-shape optimizations above - the old Phase-1 percentages were
+stale) plus manual instrumentation of specific stdlib call volumes.
+
+**Ranked hot paths (fresh profile):** `evalExpr` 16.85% self / 79.74%
+cumulative, `resolveArgs` 15.36% self, `dispatchCall` 8.36%, `execStmt`
+7.44%, `evalCall` 6.07%, GC 5.80%, stdlib lambda bodies 5.37%, outer `run`
+loop 4.48%, `Binding.get` 3.93%, `evalBinary` 3.91%. Drilling into the
+51.48%-cumulative `callUserFunction` bucket: `smc.pine`'s own `FVGDraw`
+function (called once/bar, looping over its ~51-entry FVG-tracking array
+with a dozen-odd stdlib calls per element - `array.get`: 13.5M calls total,
+`box.get_top`: 12.7M, `box.get_bottom`: 8.5M, `label.set_x`/`set_y`: 4.2M
+each) accounts for 48.51% of total run time on its own. Confirmed (not
+assumed): `ta.highest`/`ta.lowest`/`ta.highestbars`/`ta.lowestbars`/`ta.atr`
+together cost under 1% of total time for this script (200k
+`highestbars`/`lowestbars` calls totaled ~266ms out of ~21,000ms) -
+consistent with the old Phase-1 finding that this script doesn't lean on
+large lookback windows. `smc.pine` never calls `ta.sum`/`ta.sma` at all.
+
+**Root cause:** tens of millions of stdlib calls (from `FVGDraw`'s per-bar
+loop) all funnel through the same `evalCall -> dispatchCall -> resolveArgs`
+path, and until this phase, every single one of those calls allocated a
+brand-new `ResolvedArgs` object and a brand-new `BuiltinCtx` object purely
+for that one call's lifetime - at tens of millions of calls, that
+allocation/GC churn (GC alone was 5.8% self-time) was the largest
+addressable cost. The rest is the tree-walking architecture's inherent
+per-node dispatch cost, which was not touched.
+
+**Investigated and correctly NOT implemented:**
+- **Bounded-history execution** (only compute warmup+visible-range bars) -
+  found unsafe for `smc.pine` by reading its actual logic: it uses
+  `var`-declared structure-tracking state (`structureHighStartIndex`/
+  `structureLowStartIndex` and derived fields) whose correctness for the
+  current bar depends on an arbitrarily-distant prior bar (a swing point
+  that can stay open for an entire long consolidation) - the same
+  unbounded-lookback pattern this repo's own `Ara.pine` uses. Truncating
+  history would silently produce wrong BOS/CHoCH classification.
+- **Incremental/resume-from-last-bar execution** - architecturally
+  investigated (`Binding.history` is keyed by absolute bar index, which in
+  principle could support resuming), but the same unbounded-`var`-state
+  finding above means naive resumption isn't automatically safe. Correctly
+  flagged as its own dedicated, `platform-architect`-reviewed pass rather
+  than attempted here, per this being a stable-component architecture
+  change.
+- **Sliding-window `ta.highest`/`ta.lowest`** - the fresh profile confirms
+  this is under 1% of total cost for this script; not worth the
+  correctness risk of touching stable stdlib functions for negligible
+  gain. Revisit only for a future script that actually leans on large
+  lookback windows.
+- **Reintroducing `runCompiled()`** - not attempted again; no new evidence
+  emerged that would change the earlier verified-negative result above.
+
+**What was implemented:** `interpreter.ts`'s `resolveArgs()` and `ctx()`
+now reuse objects instead of allocating fresh ones on every call -
+`argsCache` (a `WeakMap` keyed by each call site's own fixed `args` AST
+array) caches the `ResolvedArgs` output object per call site, and a single
+`sharedCtx` object has its `.bar` field mutated in place instead of a new
+`{bar, bars, interp}` literal per call. Verified safe: every stdlib
+function reads `ctx`/`ResolvedArgs` fields synchronously and immediately
+(grepped, none stored past their own call), and - checked specifically,
+since a shared per-call-site object would be unsafe under recursion -
+`callUserFunction`'s `fn.scope` is already a single object shared across
+*all* invocations of a user function (pre-existing, not new to this
+change), meaning recursive Pine functions were already architecturally
+unsupported by this interpreter before this optimization; it doesn't
+introduce a new correctness gap, only extends an existing constraint.
+
+| Metric | Before | After |
+|---|---|---|
+| `interp.run()`, smc.pine, 100k bars (median of 4/8 trials) | 22705.6ms | 20566ms |
+| Speedup | - | **~9.4%** |
+| Output byte-identical (`JSON.stringify` + sha256 hash match) | - | **YES** |
+
+Modest, not transformative - consistent with the root-cause finding that
+most remaining cost is the tree-walking architecture's inherent per-node
+dispatch, which this phase deliberately did not attempt to remove (that
+would be a rewrite, explicitly out of scope). 204 frontend tests passing
+(200 + 4 new regression tests for the reused-object behavior), 110 backend
+tests unaffected, build clean. No browser was available to manually
+re-verify symbol/timeframe switching, replay, drawings, multi-chart, or
+journal in this sandbox - the change is internal to `Interpreter.ctx()`/
+`resolveArgs()` and touches neither the worker message contract nor any
+cache-key logic, so nothing about those surfaces should be affected, but
+this is inference from code reading plus the unit-test suite, not a
+literal browser observation.
+
 ## Stack notes
 
 Vite + React 19 + TypeScript, `oxlint` for linting (see `.oxlintrc.json`). Run tests with `npm test` (vitest).

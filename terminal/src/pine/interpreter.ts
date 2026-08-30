@@ -218,6 +218,51 @@ export class Interpreter {
    * __pine tag - is deliberately never cached; see evalCall's own comment
    * at that branch. */
   private callCache = new WeakMap<object, CallResolution>();
+  /** Caches the ResolvedArgs OUTPUT object per Call AST node's `args` array
+   * (used as the key since it's a stable, unique-per-call-site array
+   * created once at parse time), so a hot call site (e.g. smc.pine's
+   * FVGDraw, which calls box.get_top/box.get_bottom/array.get/label.set_x
+   * tens of millions of times across a full run) doesn't allocate a fresh
+   * object on every single call - see the profiling report in
+   * terminal/README.md#performance ("Pine interpreter - Phase 2") this was
+   * built from: resolveArgs was ~15% of total self-time, largely from this
+   * per-call allocation. This is safe to reuse across bars/iterations
+   * because, for a GIVEN args array: (1) paramNames is always the exact
+   * same array reference every time (callCache's own doc comment already
+   * establishes a Call node's callee - and therefore its target function's
+   * .params - never changes across the run), and (2) args.length and each
+   * Arg's `.name` are fixed at parse time, so the exact SET of object keys
+   * written by the loop below is identical on every invocation of this
+   * call site, forever - any paramName never covered by that fixed set
+   * simply stays at its one-time `undefined` initialization for the life
+   * of the run, exactly as if a fresh object had been re-initialized to
+   * undefined every time. No stdlib function in stdlib.ts stores the whole
+   * ResolvedArgs object anywhere (verified: every consumer only reads
+   * individual field VALUES, immediately, synchronously - grepped for any
+   * `return args`/object-spread of the parameter itself, found none), and
+   * none of the call sites this applies to (only resolveArgs's "global"/
+   * "namespace" dispatch kinds - method-call-sugar's
+   * resolveArgsWithLeadingValue is deliberately left untouched, same
+   * reasoning as callCache never caching that dynamic-dispatch branch) can
+   * re-enter themselves mid-evaluation (no user-recursive Pine functions in
+   * either target script, and a stdlib call's own argument expressions
+   * can't textually reference that same call site again without infinite
+   * recursion), so there's no risk of two in-flight uses of the same cached
+   * object colliding. */
+  private argsCache = new WeakMap<Arg[], ResolvedArgs>();
+  /** Single reusable BuiltinCtx object, mutated in place rather than
+   * reallocated on every stdlib/global call (see ctx()) - `bars` and
+   * `interp` never change for the lifetime of an Interpreter instance, and
+   * `bar` only changes once per outer bar-loop iteration, not once per
+   * call, so a fresh {bar,bars,interp} literal on every single call (tens
+   * of millions of times for a hot call site - see argsCache's comment
+   * above) was a pure allocation cost with no observable purpose. Safe for
+   * the same reason argsCache is safe: verified (grep) that no stdlib
+   * function stores the ctx object itself past its own synchronous call -
+   * every consumer reads `ctx.bar`/`ctx.bars`/`ctx.interp` immediately and
+   * only ever needs the CURRENT bar's values, never a snapshot of some
+   * earlier bar's. */
+  private sharedCtx: BuiltinCtx;
   lineRegistry = new Map<string, Record<string, unknown>>();
   boxRegistry = new Map<string, Record<string, unknown>>();
   labelRegistry = new Map<string, Record<string, unknown>>();
@@ -297,6 +342,7 @@ export class Interpreter {
     this.bars = bars;
     this.stdlib = stdlib;
     this.inputOverrides = inputOverrides;
+    this.sharedCtx = { bar: 0, bars: this.bars, interp: this };
   }
 
   freshObjId(): string {
@@ -794,21 +840,28 @@ export class Interpreter {
   }
 
   /** @internal */ resolveArgs(paramNames: string[], args: Arg[], scope: Scope): ResolvedArgs {
-    const out: ResolvedArgs = {};
-    // Pre-declare every param name, in its own fixed order, before
-    // evaluating any argument - gives V8 a single stable hidden class per
-    // stdlib function signature instead of building up whatever shape the
-    // actually-supplied args happen to produce. This same resolveArgs body
-    // runs for every stdlib call site in the script (ta.*, math.*, array.*,
-    // ...), each with a different, fixed paramNames array called
-    // repeatedly across every bar - without this, property writes into
-    // `out` were megamorphic from V8's point of view. A param not actually
-    // supplied below simply keeps the `undefined` set here, identical to
-    // what reading an absent key already returned - this changes
-    // allocation/property-access performance only, never an observable
-    // value (nothing in this codebase checks key presence on a
-    // ResolvedArgs object, only the value itself).
-    for (const p of paramNames) out[p] = undefined;
+    // Reuse the same output object across every call to this exact call
+    // site (keyed by its `args` array - see argsCache's doc comment for
+    // why this is safe) instead of allocating a fresh one every time.
+    let out = this.argsCache.get(args);
+    if (!out) {
+      out = {};
+      // Pre-declare every param name, in its own fixed order, before
+      // evaluating any argument - gives V8 a single stable hidden class per
+      // stdlib function signature instead of building up whatever shape the
+      // actually-supplied args happen to produce. This same resolveArgs body
+      // runs for every stdlib call site in the script (ta.*, math.*, array.*,
+      // ...), each with a different, fixed paramNames array called
+      // repeatedly across every bar - without this, property writes into
+      // `out` were megamorphic from V8's point of view. A param not actually
+      // supplied below simply keeps the `undefined` set here, identical to
+      // what reading an absent key already returned - this changes
+      // allocation/property-access performance only, never an observable
+      // value (nothing in this codebase checks key presence on a
+      // ResolvedArgs object, only the value itself).
+      for (const p of paramNames) out[p] = undefined;
+      this.argsCache.set(args, out);
+    }
     let positional = 0;
     for (const a of args) {
       const value = this.evalExpr(a.value, scope);
@@ -833,7 +886,8 @@ export class Interpreter {
   }
 
   ctx(): BuiltinCtx {
-    return { bar: this.bar, bars: this.bars, interp: this };
+    this.sharedCtx.bar = this.bar;
+    return this.sharedCtx;
   }
 }
 

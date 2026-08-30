@@ -249,6 +249,78 @@ if bar_index == 0
   });
 });
 
+describe("Phase 2 - reused ResolvedArgs object and shared BuiltinCtx (resolveArgs/ctx allocation optimization)", () => {
+  it("a stdlib call inside a loop gets the CURRENT iteration's value every time, not a stale value from a previous iteration/bar (resolveArgs output-object reuse)", () => {
+    const out = run(
+      `//@version=5
+indicator("t")
+var float acc = 0.0
+for i = 0 to 2
+    acc := math.max(acc, close + i)
+plot(acc)
+`,
+      3
+    );
+    // bar0 (close=1.2): i=0 -> max(0,1.2)=1.2, i=1 -> max(1.2,2.2)=2.2, i=2 -> max(2.2,3.2)=3.2
+    // bar1 (close=1.21, acc carried in at 3.2): i=2 -> close+i=3.21 > 3.2 -> acc becomes 3.21
+    // bar2 (close=1.22, acc carried in at 3.21): i=2 -> close+i=3.22 > 3.21 -> acc becomes 3.22
+    const vals = out.plots[0].points.map((p) => Number(p.value.toFixed(2)));
+    expect(vals).toEqual([3.2, 3.21, 3.22]);
+  });
+
+  it("two DIFFERENT call sites to the same stdlib function never cross-contaminate each other's cached ResolvedArgs object", () => {
+    const out = run(
+      `//@version=5
+indicator("t")
+a = math.max(close, 0)
+b = math.max(open, 100)
+plot(a, title="a")
+plot(b, title="b")
+`,
+      3
+    );
+    expect(out.plots.find((p) => p.name === "a")!.points.map((p) => Number(p.value.toFixed(2)))).toEqual([1.2, 1.21, 1.22]);
+    expect(out.plots.find((p) => p.name === "b")!.points.map((p) => p.value)).toEqual([100, 100, 100]);
+  });
+
+  it("an optional (unsupplied) stdlib param stays na/undefined-equivalent on every bar, not just the first (no stale leakage into a reused args object)", () => {
+    const out = run(
+      `//@version=5
+indicator("t")
+l = label.new(bar_index, close, "x")
+plot(bar_index)
+`,
+      3
+    );
+    // label.new's unsupplied optional params (e.g. color/style overrides)
+    // must resolve identically every bar - if a reused ResolvedArgs object
+    // ever leaked a stale value into an unsupplied slot, this would surface
+    // as a changed label field on a later bar. A new label is created every
+    // bar here (no `var`/guard), so 3 bars -> 3 registered labels, all with
+    // the same (default) style/color.
+    expect(out.labels.length).toBe(3);
+    const styles = new Set(out.labels.map((l) => l.style));
+    const colors = new Set(out.labels.map((l) => l.color));
+    expect(styles.size).toBe(1);
+    expect(colors.size).toBe(1);
+    expect(out.plots[0].points.length).toBe(3);
+  });
+
+  it("plot()'s per-bar time (read via the shared/reused BuiltinCtx.bar) tracks the CURRENT bar every call, not a stale bar from a previous call", () => {
+    const out = run(
+      `//@version=5
+indicator("t")
+plot(close)
+`,
+      4
+    );
+    const times = out.plots[0].points.map((p) => p.time);
+    // Bar times from the bars(n) helper are 1000 + i*3600 (raw seconds, as
+    // given in Bar.time - plot() doesn't rescale it).
+    expect(times).toEqual([1000, 4600, 8200, 11800]);
+  });
+});
+
 describe("multiple interpreter instances sharing the same parsed AST", () => {
   it("each instance's identCache/callCache is independent - no cross-run contamination", () => {
     const stdlib = buildStdlib();
