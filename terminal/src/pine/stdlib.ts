@@ -373,6 +373,13 @@ export function buildStdlib(): StdlibTable {
       style_label_right: "label_right",
       style_circle: "circle",
       style_cross: "cross",
+      // Additive: referenced by Ara.pine's swing-point markers (pushSwingPoint/replaceSwingPoint).
+      // computeLabelBox (PineIndicatorLayer.tsx) doesn't special-case these two - they render with the
+      // same default pill positioning as an unmatched style - so a script using them should also give
+      // the label non-empty text (e.g. a triangle glyph) since labels with empty text aren't drawn at
+      // all (see PineIndicatorLayer.tsx's `if (!text) continue`).
+      style_triangleup: "triangleup",
+      style_triangledown: "triangledown",
     },
     functions: {
       new: fn(

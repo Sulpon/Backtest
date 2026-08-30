@@ -1,0 +1,888 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LudoGH68
+//@version=5
+// Ported to run on this repo's own Pine interpreter (terminal/src/pine/**),
+// not TradingView - see the notes below wherever a TradingView-specific
+// constraint (drawing-count cap, "number of X to show" history pruning, the
+// ~5000-bar history buffer limit) has been removed or adapted:
+//   - `import LudoGH68/Drawings_public/1 as d` removed: our interpreter has
+//     no import machinery, and the 3 call sites that used d.delete_line()
+//     are inlined below using our own line.delete()/label.delete().
+//   - max_lines_count/max_labels_count/max_boxes_count ARE real and
+//     enforced by this interpreter (a FIFO cap per drawing-object registry,
+//     default 50 - see Interpreter.registerCapped in interpreter.ts) - not
+//     ignored the way this port initially assumed they might be. Raised
+//     generously here (matching the same convention already used by this
+//     repo's smc.pine) so that cap is never what actually deletes a
+//     drawing; nothing in this script is deleted purely to fit a platform
+//     limit anymore.
+indicator("SMC Structures and FVG v2", overlay = true, max_labels_count = 1000000, max_lines_count = 1000000, max_boxes_count = 500000)
+
+getLineStyle(lineOption) =>
+    lineOption == "┈" ? line.style_dotted : lineOption == "╌" ? line.style_dashed : line.style_solid
+
+// Push a brand new, permanent swing point (used when a swing is fixed/closed). No longer prunes to a
+// "history to show" cap - see the removed swingPointsHistoryNbr input below; TradingView's 500-label
+// ceiling doesn't apply here (max_labels_count above is raised well past what this ever creates), so
+// nothing is deleted just to make room for a new one.
+pushSwingPoint(_points, _idx, _price, _col, _style) =>
+    // This interpreter's label rendering only draws a label when it has non-empty text (see
+    // PineIndicatorLayer.tsx) and has no native triangle-marker shape (label.style_triangleup/down only
+    // identify the constant, they don't change what's drawn) - a small triangle glyph is used as the
+    // label's text so the swing-point marker is actually visible, standing in for TradingView's native
+    // triangle-up/down label shape.
+    markerText = _style == label.style_triangledown ? "▼" : "▲"
+    array.push(_points, label.new(_idx, _price, text=markerText, style=_style, color=_col, size=size.tiny))
+
+// Move the last (still open/trailing) swing point to its new position
+replaceSwingPoint(_points, _idx, _price, _col, _style) =>
+    lastIdx = array.size(_points) - 1
+    label.delete(array.get(_points, lastIdx))
+    markerText = _style == label.style_triangledown ? "▼" : "▲"
+    array.set(_points, lastIdx, label.new(_idx, _price, text=markerText, style=_style, color=_col, size=size.tiny))
+
+// Creates the three live (still-updating) Fibonacci lines/labels for a newly-opened side, anchored
+// horizontally at _startIndex (the bar it just opened fresh) and extending _length candles - fixed
+// for the whole live phase, never moved again. _fixedPrice is the just-confirmed 1.0 anchor (never
+// changes); _provisionalPrice is the CURRENT (still-developing) 0.0 anchor, updated by updateLiveFibo
+// below as the existing swing detector keeps moving it - including through rejected repeat attempts.
+createLiveFibo(_startIndex, _length, _fixedPrice, _provisionalPrice, _col) =>
+    fiboRange = _provisionalPrice - _fixedPrice
+    midPrice = _fixedPrice + fiboRange * 0.29
+    line1 = line.new(_startIndex, _fixedPrice, _startIndex + _length, _fixedPrice, xloc=xloc.bar_index, extend=extend.none, color=_col, width=1)
+    line071 = line.new(_startIndex, midPrice, _startIndex + _length, midPrice, xloc=xloc.bar_index, extend=extend.none, color=_col, width=1)
+    line0 = line.new(_startIndex, _provisionalPrice, _startIndex + _length, _provisionalPrice, xloc=xloc.bar_index, extend=extend.none, color=_col, width=1)
+    label1 = label.new(_startIndex + _length, _fixedPrice, text="1", style=label.style_none, textcolor=_col, size=size.tiny)
+    label071 = label.new(_startIndex + _length, midPrice, text="0.71", style=label.style_none, textcolor=_col, size=size.tiny)
+    label0 = label.new(_startIndex + _length, _provisionalPrice, text="0", style=label.style_none, textcolor=_col, size=size.tiny)
+    [line1, line071, line0, label1, label071, label0]
+
+// Moves the 0.71/0.0 levels of an already-created live Fibonacci to a new provisional price - the 1.0
+// anchor and the horizontal x-range set at creation never move.
+updateLiveFibo(_line071, _line0, _label071, _label0, _fixedPrice, _provisionalPrice) =>
+    fiboRange = _provisionalPrice - _fixedPrice
+    midPrice = _fixedPrice + fiboRange * 0.29
+    line.set_y1(_line071, midPrice)
+    line.set_y2(_line071, midPrice)
+    label.set_y(_label071, midPrice)
+    line.set_y1(_line0, _provisionalPrice)
+    line.set_y2(_line0, _provisionalPrice)
+    label.set_y(_label0, _provisionalPrice)
+
+// Moves a finished live Fibonacci's 3 lines/3 labels into the permanent history arrays - called once
+// its side is genuinely fixed; never touched again. No longer pruned to a "history to show" cap (see
+// the removed fiboHistoryNbr input) - max_lines_count/max_labels_count above are the only ceiling now.
+releaseLiveFibo(_lines, _labels, _line1, _line071, _line0, _label1, _label071, _label0) =>
+    array.push(_lines, _line1)
+    array.push(_lines, _line071)
+    array.push(_lines, _line0)
+    array.push(_labels, _label1)
+    array.push(_labels, _label071)
+    array.push(_labels, _label0)
+
+// Show the stats for the most recently evaluated continuation retracement, for verifying the
+// structural-duration, retracement-%, and retracement-candles filters visually.
+// table.* is a no-op stub on this platform (see stdlib.ts - no on-chart table surface yet), so this
+// no longer builds a table.new/table.cell grid; it renders as a single text label instead (one
+// fillText call - PineIndicatorLayer.tsx doesn't split labels on newlines, so this stays one line).
+showRetracementDebugInfo(_lbl, _fixedIndex, _extremeIndex, _breakIndex, _structDuration, _minStructDuration, _test1Passed, _fixedPrice, _extremePrice, _pct, _minPct, _pctEnabled, _test2Passed, _retracementCandles, _minRetracementCandles, _candlesEnabled, _test3Passed, _finalPassed) =>
+    test1Text = _test1Passed ? "PASS" : "FAIL"
+    test2Text = not _pctEnabled ? "disabled" : (_test2Passed ? "PASS" : "FAIL")
+    test3Text = not _candlesEnabled ? "disabled" : (_test3Passed ? "PASS" : "FAIL")
+    finalText = _finalPassed ? "CONFIRM" : "REJECT"
+
+    text = "Retracement debug | idx(fixed/extreme/break)=" + str.tostring(_fixedIndex) + "/" + str.tostring(_extremeIndex) + "/" + str.tostring(_breakIndex) + " | price(fixed/extreme)=" + str.tostring(_fixedPrice) + "/" + str.tostring(_extremePrice) + " | T1 duration=" + str.tostring(_structDuration) + " (min " + str.tostring(_minStructDuration) + ")=" + test1Text + " | T2 retracement%=" + str.tostring(_pct, "#.####") + "% (min " + str.tostring(_minPct) + "%)=" + test2Text + " | T3 retracement candles=" + str.tostring(_retracementCandles) + " (min " + str.tostring(_minRetracementCandles) + ")=" + test3Text + " | FINAL=" + finalText
+
+    label.set_x(_lbl, bar_index)
+    label.set_y(_lbl, high)
+    label.set_text(_lbl, text)
+    label.set_color(_lbl, _finalPassed ? color.new(color.green, 20) : color.new(color.red, 20))
+
+is_structure_high_broken(_highStructBreakPrice, _structureHigh, _structureHighStartIndex, _structureDirection) =>
+    var bool res = false
+
+    if (_highStructBreakPrice > _structureHigh and  bar_index[1] >  _structureHighStartIndex) or (_structureDirection == 1 and _highStructBreakPrice > _structureHigh)
+        res := true
+    else
+        res := false
+
+    res
+
+// Fear Value Gap
+isFvgToShow =  input(true, title='Display FVG', group="Fear Value Gap")
+bullishFvgColor = input(color.new(color.green, 50), 'Bullish FVG Color', group="Fear Value Gap")
+bearishFvgColor = input(color.new(color.red, 50), 'Bearish FVG Color', group="Fear Value Gap")
+mitigatedFvgColor = input(color.new(color.gray, 50), 'Mitigated FVG Color', group="Fear Value Gap")
+// "Number of FVG to show" (fvgHistoryNbr, default 5/max 50) removed - it existed only to stay under
+// TradingView's rendering limits; every FVG now stays until it's actually mitigated (real logic below),
+// never pruned by an arbitrary count.
+isMitigatedFvgToReduce = input(false, title='Reduce mitigated FVG', group="Fear Value Gap")
+
+// Structures
+isStructBodyCandleBreak = input(true, title='Break with candle\'s body', group="Structures")
+isCurrentStructToShow = input(true, title='Display current structure', group="Structures")
+bullishBosColor = input(color.silver, 'Bullish BOS Color', group="Structures")
+bearishBosColor = input(color.silver, 'Bearish BOS Color', group="Structures")
+bosLineStyleOption = input.string("─", title="BOS Style", group="Structures", options=["─", "┈", "╌"])
+bosLineStyle = getLineStyle(bosLineStyleOption)
+bosLineWidth = input.int(1, title="BOS Width", group="Structures", minval=1, maxval=5)
+bullishChochColor = input(color.yellow, 'Bullish CHoCH Color', group="Structures")
+bearishChochColor = input(color.yellow, 'Bearish CHoCH Color', group="Structures")
+chochLineStyleOption = input.string("─", title="CHoCH Style", group="Structures", options=["─", "┈", "╌"])
+chochLineStyle = getLineStyle(chochLineStyleOption)
+chochLineWidth = input.int(1, title="MSB Width", group="Structures", minval=1, maxval=5)
+currentStructColor = input(color.blue, 'Current structure Color', group="Structures")
+currentStructLineStyleOption = input.string("─", title="Current structure Style", group="Structures", options=["─", "┈", "╌"])
+currentStructLineStyle = getLineStyle(currentStructLineStyleOption)
+currentStructLineWidth = input.int(1, title="Current structure Width", group="Structures", minval=1, maxval=5)
+isSwingPointsToShow = input(true, title='Display swing points', group="Structures")
+swingHighPointColor = input(color.red, 'Swing High Point Color', group="Structures")
+swingLowPointColor = input(color.lime, 'Swing Low Point Color', group="Structures")
+// "Number of swing points to show" (swingPointsHistoryNbr, TradingView-capped at 500 because "TradingView
+// allows at most 500 labels on a chart") and "Number of break to show" (structHistoryNbr) removed - both
+// existed only for that platform ceiling; max_labels_count/max_lines_count above are this interpreter's
+// real (and far higher) equivalent, so swing points and BOS/CHoCH lines are no longer pruned by count.
+minRetracementStartCandles = input.int(4, 'Minimum candles to flag a candidate swing point', group="Structures", minval=1, tooltip="How many consecutive candles a swing high/low must sit unbroken before it's even eligible to be tested as a structural break - this is the 'first sign of retracement' pause. Below this, a break attempt is treated as ordinary continued trailing, not a structural event at all.")
+minBarsBetweenSwingPoints = input.int(8, 'Minimum candles since the candidate formed', group="Structures", minval=0, tooltip="Once a break attempt is eligible (see 'Minimum candles to flag a candidate swing point'), this is how many candles must have passed since the candidate swing point itself formed for that break to actually confirm it. A leg shorter than this is rejected - the candidate is discarded and the search for a new swing point continues from this bar.")
+isMinRetracementPercentEnabled = input(true, 'Enable Minimum Retracement %', group="Structures")
+minRetracementPercent = input.float(0.10, 'Minimum Retracement %', group="Structures", minval=0.0, step=0.01, tooltip="Minimum size, as a percentage move from the fixed extreme to the retracement's own extreme, a continuation retracement must reach before it's considered valid. Checked only after the candle-count filter passes; applies to continuations only, never to reversals.")
+isMinRetracementCandlesEnabled = input(true, 'Enable Minimum Retracement Candles', group="Structures")
+minRetracementCandles = input.int(5, 'Minimum Retracement Candles', group="Structures", minval=0, tooltip="Minimum number of candles from the fixed structural point to the retracement's OWN extreme (not to the eventual structural break) that a continuation retracement must span. This is different from 'Minimum candles since the candidate formed', which measures all the way to the break. Checked only after the candle-count and retracement-% filters pass; applies to continuations only, never to reversals.")
+showRetracementDebug = input(false, 'Show retracement debug info', group="Structures", tooltip="Displays the stats for the most recently evaluated continuation retracement (structural duration, retracement %, retracement candles, and whether each filter passed).")
+showBosDebug = input(false, 'Show BOS body-break debug info', group="Structures", tooltip="Displays, on every bar, the fixed structural low/high, the current low/high/close, and whether the body-close break condition is currently true - for verifying that a wick alone never confirms a structural break.")
+
+// Fibonacci is drawn live, tracking the same swing detector state the triangle markers use: the
+// instant a BOS/CHoCH fixes one side, a Fibonacci is created from that fixed point (1.0) to the
+// other, still-developing side's current value (0.0). It keeps updating every time that side's
+// triangle moves - including through rejected repeat-BOS attempts - and only freezes at the next
+// genuine BOS/CHoCH confirm, never at a mere pause. Only 0/0.71/1 are shown.
+isFiboToShow = input(true, 'Display Fibonacci', group="Structure Fibonacci")
+fiboColor = input(color.blue, 'Fibonacci Color', group="Structure Fibonacci")
+fiboLineLength = input.int(10, 'Fibonacci line length (candles)', group="Structure Fibonacci", minval=1)
+// "Number of Fibonacci ranges to show" (fiboHistoryNbr) removed - existed only to stay under
+// TradingView's drawing caps; released Fibonacci ranges now simply accumulate.
+
+// Trade visualization: a pending order always mirrors the currently-live Fibonacci's 0.71 (entry),
+// 1.0 (SL) and 0.0 (TP), created the instant that fib is and kept in sync with it through every
+// trailing extension and rejected re-test. Long when the fib's 0.0 sits above its 1.0 (a bullish
+// LOW->HIGH leg), short otherwise. Fires the instant price wicks to entry, then runs (drawn as red SL
+// / green TP regions from the entry candle) until a wick reaches either SL or TP; discarded instead if
+// its swing point gets confirmed without ever being touched.
+isTradeToShow = input(true, 'Display entry/SL/TP trades', group="Structure Fibonacci")
+// "Number of trades to show" (tradeHistoryNbr) removed - existed only to stay under TradingView's
+// drawing caps; closed trade SL/TP boxes now simply accumulate.
+tradeSlColor = input(color.new(color.red, 70), 'Stop Loss Region Color', group="Structure Fibonacci")
+tradeTpColor = input(color.new(color.green, 70), 'Take Profit Region Color', group="Structure Fibonacci")
+showStatsTable = input(true, 'Show trade statistics table', group="Structure Fibonacci", tooltip="Win/loss counts and win rates for all triggered trades, and broken down by long/short.")
+
+// Draw FVG into graph
+FVGDraw(_boxes, _fvgTypes, _isFvgMitigated, _fvgLabels) =>
+
+    // Loop into all values of the array
+    for [index, value] in _boxes
+
+        // Processing bullish FVG
+        if(array.get(_fvgTypes, index))
+
+            // Check if FVG has been totally mitigated
+            if(low <= box.get_bottom(value))
+                array.remove(_boxes, index)
+                array.remove(_fvgTypes, index)
+                array.remove(_isFvgMitigated, index)
+                label.delete(array.get(_fvgLabels, index))
+                array.remove(_fvgLabels, index)
+                box.delete(value)
+            else
+                if(low < box.get_top((value)))
+                    box.set_bgcolor(value, mitigatedFvgColor)
+
+                    // Mitigated FVG Alert
+                    if(not(array.get(_isFvgMitigated, index)))
+                        alert("FVG has been mitigated", alert.freq_once_per_bar)
+                        array.set(_isFvgMitigated, index, true)
+
+                    // Reduce FVG if needed
+                    if(isMitigatedFvgToReduce)
+                        box.set_top(value, low)
+
+                box.set_right(value, bar_index)
+                label.set_x(array.get(_fvgLabels, index), (box.get_left(value) + box.get_right(value)) / 2 )
+                label.set_y(array.get(_fvgLabels, index), box.get_top(value) - (box.get_top(value) - box.get_bottom(value)) / 2)
+
+        // Processing bearish FVG
+        else
+
+            // Check if FVG has been mitigated
+            if(high >= box.get_top(value))
+                array.remove(_boxes, index)
+                array.remove(_fvgTypes, index)
+                array.remove(_isFvgMitigated, index)
+                label.delete(array.get(_fvgLabels, index))
+                array.remove(_fvgLabels, index)
+                box.delete(value)
+            else
+                if(high > box.get_bottom((value)))
+                    box.set_bgcolor(value, mitigatedFvgColor)
+
+                    // Mitigated FVG Alert
+                    if(not(array.get(_isFvgMitigated, index)))
+                        alert("FVG has been mitigated", alert.freq_once_per_bar)
+                        array.set(_isFvgMitigated, index, true)
+
+                    // Reduce FVG if needed
+                    if(isMitigatedFvgToReduce)
+                        box.set_bottom(value, high)
+
+                box.set_right(value, bar_index)
+                label.set_x(array.get(_fvgLabels, index), (box.get_left(value) + box.get_right(value)) / 2 )
+                label.set_y(array.get(_fvgLabels, index), box.get_top(value) - (box.get_top(value) - box.get_bottom(value)) / 2)
+
+// Arrays variable
+var array<line> structureLines = array.new_line(0)
+var array<label> structureLabels = array.new_label(0)
+var array<box>  fvgBoxes = array.new_box(0)
+var array<bool> fvgTypes = array.new_bool(0)
+var array<label> fvgLabels = array.new_label(0)
+var array<bool> isFvgMitigated = array.new_bool(0)
+
+// Price variables
+var float structureHigh = 0.0
+var float structureLow = 0.0
+
+// Index variable
+var int structureHighStartIndex = 0
+var int structureLowStartIndex = 0
+var int structureDirection = 0
+
+// Line variable
+var line structureHighLine = na
+var line structureLowLine = na
+
+// Swing point variable
+var array<label> swingHighPoints = array.new_label(0)
+var array<label> swingLowPoints = array.new_label(0)
+var bool isHighPointOpen = false
+var bool isLowPointOpen = false
+
+// Debug table for the retracement filters (only populated/shown when showRetracementDebug is on)
+// table.* is a no-op stub on this platform (no on-chart table surface yet - see stdlib.ts), so these
+// three debug/stats readouts are single text labels instead of tables (see showRetracementDebugInfo,
+// the BOS-debug block, and the stats-table block below for how each is built/updated).
+var label retracementDebugLabel = na
+var label bosDebugLabel = na
+
+// Fibonacci lines/labels drawn per completed leg - accumulate indefinitely, no history cap (see the
+// removed fiboHistoryNbr input above).
+var array<line> fiboLines = array.new_line(0)
+var array<label> fiboLabels = array.new_label(0)
+
+// The single currently-live (still-updating) Fibonacci's 3 lines/3 labels/1.0 anchor - na whenever
+// nothing is live. Reused for whichever side (bullish or bearish) is currently developing, since only
+// one side is ever open/live at a time.
+var line liveFibo1Line = na
+var line liveFibo071Line = na
+var line liveFibo0Line = na
+var label liveFibo1Label = na
+var label liveFibo071Label = na
+var label liveFibo0Label = na
+var float fiboFixedPrice = na
+
+// Trade state: the single pending order (if any) always mirrors the currently-live Fibonacci's
+// 0.71/1.0/0.0 in real time - created the instant a live fib is, kept in sync every time that fib
+// updates (ordinary trailing or a rejected re-test), and discarded the instant its swing point
+// instead gets genuinely confirmed without ever being touched. Running positions (waiting for price
+// to wick to SL or TP) stay as parallel arrays since several can be open at once. Closed trades'
+// boxes accumulate indefinitely - no history cap (see the removed tradeHistoryNbr input above).
+var float pendingEntry = na
+var float pendingSl = na
+var float pendingTp = na
+var bool pendingIsLong = false
+var array<float> runningSl = array.new_float(0)
+var array<float> runningTp = array.new_float(0)
+var array<bool> runningIsLong = array.new_bool(0)
+var array<box> runningSlBox = array.new_box(0)
+var array<box> runningTpBox = array.new_box(0)
+var array<box> closedTradeBoxes = array.new_box(0)
+
+// Trade statistics table state - counts triggered (entry touched) trades only, split by outcome
+// (TP hit = win, SL hit = loss) and by direction.
+var int totalTradeCount = 0
+var int totalWinCount = 0
+var int longTradeCount = 0
+var int longWinCount = 0
+var int shortTradeCount = 0
+var int shortWinCount = 0
+var label statsLabel = na
+
+var bool isBOSAlert = false
+var bool isCHOCHAlert = false
+//
+//
+// ==========================================================================================
+//                              FAIR VALUE GAP FINDER PROCESSING
+// ==========================================================================================
+//
+//
+// Define FVG type
+isBullishFVG = high[3] < low[1]
+isBearishFVG = low[3] > high[1]
+
+// Bullish FVG process
+if(isBullishFVG and isFvgToShow)
+
+    // Add FVG into FVG's array
+    box _box = box.new(left=bar_index - 2, top=low[1], right=bar_index[1], bottom=high[3], border_style=line.style_solid, border_width=1, bgcolor=bullishFvgColor, border_color=color.new(color.green, 100))
+    label _label = label.new(math.ceil((_box.get_left() + _box.get_right()) / 2), _box.get_top() - (_box.get_top() - _box.get_bottom()) / 2, text = "FVG", style = label.style_none, textcolor = color.white)
+    array.push(fvgBoxes, _box)
+    array.push(fvgTypes, true)
+    array.push(isFvgMitigated, false)
+    array.push(fvgLabels, _label)
+    // No longer pruned to a "number of FVG to show" cap (see the removed fvgHistoryNbr input) - an FVG
+    // is only ever removed below (FVGDraw) once it's genuinely, fully mitigated.
+
+// Bearish FVG process
+if(isBearishFVG and isFvgToShow)
+
+    // Add FVG into FVG's array
+    box _box = box.new(left=bar_index - 2, top=low[3], right=bar_index[1], bottom=high[1], border_style=line.style_solid, border_width=1, bgcolor=bearishFvgColor, border_color=color.new(color.red, 100))
+    label _label = label.new(math.ceil((_box.get_left() + _box.get_right()) / 2), _box.get_top() - (_box.get_top() - _box.get_bottom()) / 2, text = "FVG", style = label.style_none, textcolor = color.white)
+    array.push(fvgBoxes, _box)
+    array.push(fvgTypes, false)
+    array.push(isFvgMitigated, false)
+    array.push(fvgLabels, _label)
+    // No longer pruned to a "number of FVG to show" cap (see the removed fvgHistoryNbr input) - an FVG
+    // is only ever removed below (FVGDraw) once it's genuinely, fully mitigated.
+
+// Draw FVG
+FVGDraw(fvgBoxes, fvgTypes, isFvgMitigated, fvgLabels)
+//
+//
+// ==========================================================================================
+//                                   STRUCTURES PROCESSING
+// ==========================================================================================
+//
+//
+// Initialize value for bar 0
+if(bar_index == 0)
+    structureHighStartIndex := bar_index
+    structureLowStartIndex  := bar_index
+    structureHigh := high
+    structureLow  := low
+
+    if(isSwingPointsToShow)
+        pushSwingPoint(swingHighPoints, structureHighStartIndex, structureHigh, swingHighPointColor, label.style_triangledown)
+        pushSwingPoint(swingLowPoints, structureLowStartIndex, structureLow, swingLowPointColor, label.style_triangleup)
+        isHighPointOpen := true
+        isLowPointOpen := true
+
+// TradingView can't draw a line/label anchored too far behind the current bar (and its ta.*/series
+// history only reaches back ~5000 bars), which is why the original script clamped
+// structureHighStartIndex/structureLowStartIndex to bar_index - 4500 here. This interpreter has no such
+// ceiling - Binding.history (interpreter.ts) is a plain per-variable array covering every bar of the
+// loaded dataset, and line/label x-coordinates accept any bar index - so a swing point now stays
+// anchored at its true origin for the whole loaded period instead of being clamped to a recent window.
+
+highest = bar_index > 10 ? ta.highest(10) : ta.highest(bar_index + 1)
+highestBar = bar_index > 10 ? ta.highestbars(high, 10) : ta.highestbars(high, bar_index + 1)
+lowest = bar_index > 10 ? ta.lowest(10) : ta.lowest(bar_index + 1)
+lowestBar = bar_index > 10 ? ta.lowestbars(low, 10) : ta.lowestbars(low, bar_index + 1)
+// Look back only over the current, untracked retracement (since the opposite side was last fixed/reset),
+// so the swing point captures the true extreme of that retracement instead of a fixed-length window.
+// No longer capped at 4500: this interpreter's ta.highestbars/ta.lowestbars (stdlib.ts's taExtremeRaw)
+// walk back exactly `length` bars bounded only by bar 0, with no fixed historical-buffer limit to stay
+// under - so a suppressed break can now search all the way back to wherever the reference point last
+// moved, however long ago that was, keeping structure tracking correct across the full loaded period.
+highLookbackLen = bar_index - structureLowStartIndex + 1
+lowLookbackLen  = bar_index - structureHighStartIndex + 1
+structureMaxBar = bar_index + ta.highestbars(high, highLookbackLen)
+structureMinBar = bar_index + ta.lowestbars(low, lowLookbackLen)
+// The swing detector's current HIGH/LOW price - computed once per bar and reused everywhere the
+// still-open triangle marker needs "the current swing HIGH/LOW", instead of each call site
+// recomputing its own local copy.
+swingHighPrice = high[bar_index - structureMaxBar]
+swingLowPrice = low[bar_index - structureMinBar]
+lowStructBreakPrice = isStructBodyCandleBreak ? close : low
+highStructBreakPrice = isStructBodyCandleBreak ? close : high
+// A swing point is only eligible to be tested for a structural break once it has sat unbroken for at
+// least minRetracementStartCandles - "the first sign of retracement". Before that, any wick/close past
+// it is just ordinary continued trailing (handled by the else branch below), not a structural event at
+// all. Because ordinary trailing always claims a bar the moment lowStructBreakPrice/highStructBreakPrice
+// crosses the fixed level (while direction still permits it), no bar between structureLowStartIndex/
+// structureHighStartIndex and now can have silently crossed it without moving that index forward - so
+// checking the gap alone is equivalent to (and replaces) the old hardcoded "3 prior bars didn't cross
+// it" check.
+isStuctureLowBroken = (lowStructBreakPrice < structureLow and (bar_index - structureLowStartIndex >= minRetracementStartCandles)) or (structureDirection == 2 and lowStructBreakPrice < structureLow)
+isStructureHighBroken = (highStructBreakPrice > structureHigh and (bar_index - structureHighStartIndex >= minRetracementStartCandles)) or (structureDirection == 1 and highStructBreakPrice > structureHigh)
+
+// Temporary debug: on every bar, shows exactly what the body-close break condition sees, to verify
+// a wick alone never confirms a structural break (lowStructBreakPrice/highStructBreakPrice already
+// equal close in body mode, low/high in wick mode - this just surfaces that fact per-bar).
+if(showBosDebug)
+    if(na(bosDebugLabel))
+        bosDebugLabel := label.new(bar_index, low, text="", style=label.style_label_up, color=color.new(color.black, 20), textcolor=color.white, size=size.small)
+    lowBodyBreakConfirmed = isStuctureLowBroken
+    highBodyBreakConfirmed = isStructureHighBroken
+    bosDebugText = "BOS body-break debug | fixedLow/High=" + str.tostring(structureLow) + "/" + str.tostring(structureHigh) + " | low/high=" + str.tostring(low) + "/" + str.tostring(high) + " | close=" + str.tostring(close) + " | bodyBreakConfirmed(low/high)=" + str.tostring(lowBodyBreakConfirmed) + "/" + str.tostring(highBodyBreakConfirmed)
+    label.set_x(bosDebugLabel, bar_index)
+    label.set_y(bosDebugLabel, low)
+    label.set_text(bosDebugLabel, bosDebugText)
+
+
+if(isStuctureLowBroken)
+
+    // Decide BOS vs CHoCH from the direction as it stands right before this break updates it, and
+    // snapshot the low/its bar before this event reassigns them below - needed so the BOS/CHoCH line
+    // is drawn at the level that actually got broken, not at the freshly-opened low that replaces it.
+    previousDirection = structureDirection
+    previousLowStartIndex = structureLowStartIndex
+    previousLow = structureLow
+    isContinuation = previousDirection == 1
+
+    // The retracement is only now complete, so finalize its high here - reused below whether this
+    // sequence passes all filters (as the confirmed structural high) or fails one of them (in which
+    // case it's discarded, never having been tracked as anything but this precomputed candidate).
+    candidateHighStartIndex = structureMaxBar
+    candidateHigh = high[bar_index - candidateHighStartIndex]
+
+    // Three filters, evaluated in order, all applying only to a CONTINUATION - breaking the previous,
+    // independently-confirmed structural low (a REVERSAL) is never gated by any of them: that level
+    // already proved itself when it was confirmed.
+    //   Test 1: CANDIDATE AGE  - candles since the candidate LOW itself formed (structureLowStartIndex,
+    //                            wherever ordinary trailing last left it) -> the candle that breaks it.
+    //                            Too young (< minBarsBetweenSwingPoints) and the candidate is
+    //                            discarded, not confirmed as a swing low.
+    //   Test 2: RETRACEMENT %  - fixed low -> the retracement's own high, as a price move.
+    //   Test 3: RETRACEMENT CANDLES - fixed low -> the retracement's own high, in candles.
+    // Test 3 is NOT the same span as Test 1: the retracement's high can (and usually does) occur
+    // well before the break finally happens.
+    structuralDurationCandles = bar_index - structureLowStartIndex
+    test1Passed = not isContinuation or (structuralDurationCandles >= minBarsBetweenSwingPoints)
+
+    retracementPercent = isContinuation ? (candidateHigh - structureLow) / structureLow * 100 : na
+    test2Passed = not isContinuation or not isMinRetracementPercentEnabled or (retracementPercent >= minRetracementPercent)
+
+    retracementCandles = candidateHighStartIndex - structureLowStartIndex
+    test3Passed = not isContinuation or not isMinRetracementCandlesEnabled or (retracementCandles >= minRetracementCandles)
+
+    isBosSuppressed = isContinuation and not (test1Passed and test2Passed and test3Passed)
+
+    if(showRetracementDebug and isContinuation)
+        if(na(retracementDebugLabel))
+            retracementDebugLabel := label.new(bar_index, high, text="", style=label.style_label_down, color=color.new(color.black, 20), textcolor=color.white, size=size.small)
+        showRetracementDebugInfo(retracementDebugLabel, structureLowStartIndex, candidateHighStartIndex, bar_index, structuralDurationCandles, minBarsBetweenSwingPoints, test1Passed, structureLow, candidateHigh, retracementPercent, minRetracementPercent, isMinRetracementPercentEnabled, test2Passed, retracementCandles, minRetracementCandles, isMinRetracementCandlesEnabled, test3Passed, not isBosSuppressed)
+
+    if(isBosSuppressed)
+        // Rejected: the candidate high wasn't old enough - unfix it and start searching for a new one.
+        // Extends the same (live-tracked) side's search to this bar's new, lower extreme - never
+        // touches the opposite (HIGH) side, which is never live-tracked while direction stays bearish,
+        // so there's nothing to delete or undo for it.
+        structureLow := low
+        structureLowStartIndex := bar_index
+        if(isSwingPointsToShow)
+            if(isLowPointOpen)
+                replaceSwingPoint(swingLowPoints, structureLowStartIndex, structureLow, swingLowPointColor, label.style_triangleup)
+            else
+                pushSwingPoint(swingLowPoints, structureLowStartIndex, structureLow, swingLowPointColor, label.style_triangleup)
+                isLowPointOpen := true
+        // The search continues, unresolved - keep the live Fibonacci's 0.71/0.0 following this same
+        // rejected-but-still-searching value, exactly matching the triangle above.
+        if(isFiboToShow and not na(liveFibo0Line))
+            updateLiveFibo(liveFibo071Line, liveFibo0Line, liveFibo071Label, liveFibo0Label, fiboFixedPrice, structureLow)
+        // The pending order (if it hasn't fired yet) follows this same rejected-but-still-searching
+        // value - entry always recomputed at 0.71 of the current fib, exactly matching the triangle.
+        if(isTradeToShow and not na(pendingEntry))
+            pendingEntry := fiboFixedPrice + (structureLow - fiboFixedPrice) * 0.29
+            pendingTp := structureLow
+        isBOSAlert := false
+        isCHOCHAlert := false
+    else
+        // Update values for new structure - reuse the already-finalized candidate high computed above.
+        structureDirection := 1
+        structureHighStartIndex := candidateHighStartIndex
+        structureLowStartIndex  := bar_index
+        structureHigh := candidateHigh
+        structureLow  := low
+
+        // If the high was still open (direction just flipped), it's already correctly tracked via trailing - just close it.
+        // If it was already frozen (repeat break in the same direction), this lookback found a genuinely new peak - mark it.
+        if(isSwingPointsToShow)
+            if(not isHighPointOpen)
+                pushSwingPoint(swingHighPoints, structureHighStartIndex, structureHigh, swingHighPointColor, label.style_triangledown)
+            pushSwingPoint(swingLowPoints, structureLowStartIndex, structureLow, swingLowPointColor, label.style_triangleup)
+        isHighPointOpen := false
+        isLowPointOpen := true
+
+        // No longer pruned to a "number of break to show" cap (see the removed structHistoryNbr input) -
+        // BOS/CHoCH lines and labels now simply accumulate.
+
+        // The swing low just got broken: BOS if continuing a bearish trend, CHoCH if reversing from
+        // bullish. Drawn at the level that was actually broken (previousLow/previousLowStartIndex),
+        // not the freshly-opened low that replaces it above.
+        if(previousDirection == 1)
+            array.push(structureLines, line.new(previousLowStartIndex, previousLow, bar_index, previousLow, xloc=xloc.bar_index, extend=extend.none, color=bearishBosColor, style=bosLineStyle, width=bosLineWidth))
+            array.push(structureLabels, label.new((bar_index + previousLowStartIndex) / 2, previousLow, text="BOS", style=label.style_none, textcolor=bearishBosColor))
+            isBOSAlert := true
+            isCHOCHAlert := false
+        else
+            array.push(structureLines, line.new(previousLowStartIndex, previousLow, bar_index, previousLow, xloc=xloc.bar_index, extend=extend.none, color=bearishChochColor, style=chochLineStyle, width=chochLineWidth))
+            array.push(structureLabels, label.new((bar_index + previousLowStartIndex) / 2, previousLow, text="CHoCH", style=label.style_none, textcolor=bearishChochColor))
+            isCHOCHAlert := true
+            isBOSAlert := false
+
+
+        // Fibonacci: whatever was live before this event just got genuinely fixed - a bullish one
+        // (previousDirection==2, tracking HIGH) freezes at swingHighPrice; a bearish one
+        // (previousDirection==1, tracking LOW) freezes at swingLowPrice; previousDirection==0 means
+        // nothing was live yet. Then immediately start a new live bearish Fibonacci (HIGH -> LOW) for
+        // the leg opening now, using the just-fixed candidateHigh as 1.0 and LOW's fresh value as 0.0.
+        if(not na(liveFibo0Line))
+            // Freeze at whatever the live fib was already last tracking - do NOT recompute via
+            // swingHighPrice/swingLowPrice here: that retroactive search spans up to and including
+            // THIS confirm bar, and this bar is where price just broke past the old peak, so its own
+            // (new, higher/lower) wick would get swept in and wrongly attributed to the OLD peak being
+            // frozen. The live fib's current position already reflects the correct old peak from its
+            // last legitimate trailing update, so just release it as-is.
+            // Whatever pending order was tracking this fib never got hit - discard it outright; a
+            // fresh one (if any) gets created below alongside the new live fib.
+            if(isTradeToShow)
+                pendingEntry := na
+                pendingSl := na
+                pendingTp := na
+            releaseLiveFibo(fiboLines, fiboLabels, liveFibo1Line, liveFibo071Line, liveFibo0Line, liveFibo1Label, liveFibo071Label, liveFibo0Label)
+            liveFibo1Line := na
+            liveFibo071Line := na
+            liveFibo0Line := na
+            liveFibo1Label := na
+            liveFibo071Label := na
+            liveFibo0Label := na
+        if(isFiboToShow)
+            // Multi-value return captured via array.get instead of Pine's [a, b, ...] = f() tuple-
+            // destructuring assignment: this interpreter's parser doesn't support that assignment form
+            // (only `for [i, v] in arr` is a special-cased destructuring binding). createLiveFibo's
+            // return value is still the same 6-item array, just read out by index.
+            fiboResult = createLiveFibo(bar_index, fiboLineLength, candidateHigh, structureLow, fiboColor)
+            liveFibo1Line := array.get(fiboResult, 0)
+            liveFibo071Line := array.get(fiboResult, 1)
+            liveFibo0Line := array.get(fiboResult, 2)
+            liveFibo1Label := array.get(fiboResult, 3)
+            liveFibo071Label := array.get(fiboResult, 4)
+            liveFibo0Label := array.get(fiboResult, 5)
+            fiboFixedPrice := candidateHigh
+            // New pending order for this fresh bearish leg - entry at its 0.71, SL at the just-fixed
+            // HIGH (1.0), TP at LOW's fresh developing value (0.0); kept in sync as that value moves.
+            if(isTradeToShow)
+                pendingEntry := candidateHigh + (structureLow - candidateHigh) * 0.29
+                pendingSl := candidateHigh
+                pendingTp := structureLow
+                pendingIsLong := false
+
+// Check for breakout
+else if(isStructureHighBroken)
+
+    // Decide BOS vs CHoCH from the direction as it stands right before this break updates it, and
+    // snapshot the high/its bar before this event reassigns them below - needed so the BOS/CHoCH line
+    // is drawn at the level that actually got broken, not at the freshly-opened high that replaces it.
+    previousDirection = structureDirection
+    previousHighStartIndex = structureHighStartIndex
+    previousHigh = structureHigh
+    isContinuation = previousDirection == 2
+
+    // The retracement is only now complete, so finalize its low here - reused below whether this
+    // sequence passes all filters (as the confirmed structural low) or fails one of them (in which
+    // case it's discarded, never having been tracked as anything but this precomputed candidate).
+    candidateLowStartIndex = structureMinBar
+    candidateLow = low[bar_index - candidateLowStartIndex]
+
+    // Three filters, evaluated in order, all applying only to a CONTINUATION - breaking the previous,
+    // independently-confirmed structural high (a REVERSAL) is never gated by any of them: that level
+    // already proved itself when it was confirmed.
+    //   Test 1: CANDIDATE AGE  - candles since the candidate HIGH itself formed (structureHighStartIndex,
+    //                            wherever ordinary trailing last left it) -> the candle that breaks it.
+    //                            Too young (< minBarsBetweenSwingPoints) and the candidate is
+    //                            discarded, not confirmed as a swing high.
+    //   Test 2: RETRACEMENT %  - fixed high -> the retracement's own low, as a price move.
+    //   Test 3: RETRACEMENT CANDLES - fixed high -> the retracement's own low, in candles.
+    // Test 3 is NOT the same span as Test 1: the retracement's low can (and usually does) occur
+    // well before the break finally happens.
+    structuralDurationCandles = bar_index - structureHighStartIndex
+    test1Passed = not isContinuation or (structuralDurationCandles >= minBarsBetweenSwingPoints)
+
+    retracementPercent = isContinuation ? (structureHigh - candidateLow) / structureHigh * 100 : na
+    test2Passed = not isContinuation or not isMinRetracementPercentEnabled or (retracementPercent >= minRetracementPercent)
+
+    retracementCandles = candidateLowStartIndex - structureHighStartIndex
+    test3Passed = not isContinuation or not isMinRetracementCandlesEnabled or (retracementCandles >= minRetracementCandles)
+
+    isBosSuppressed = isContinuation and not (test1Passed and test2Passed and test3Passed)
+
+    if(showRetracementDebug and isContinuation)
+        if(na(retracementDebugLabel))
+            retracementDebugLabel := label.new(bar_index, high, text="", style=label.style_label_down, color=color.new(color.black, 20), textcolor=color.white, size=size.small)
+        showRetracementDebugInfo(retracementDebugLabel, structureHighStartIndex, candidateLowStartIndex, bar_index, structuralDurationCandles, minBarsBetweenSwingPoints, test1Passed, structureHigh, candidateLow, retracementPercent, minRetracementPercent, isMinRetracementPercentEnabled, test2Passed, retracementCandles, minRetracementCandles, isMinRetracementCandlesEnabled, test3Passed, not isBosSuppressed)
+
+    if(isBosSuppressed)
+        // Rejected: the candidate low wasn't old enough - unfix it and start searching for a new one.
+        // Extends the same (live-tracked) side's search to this bar's new, higher extreme - never
+        // touches the opposite (LOW) side, which is never live-tracked while direction stays bullish,
+        // so there's nothing to delete or undo for it.
+        structureHigh := high
+        structureHighStartIndex := bar_index
+        if(isSwingPointsToShow)
+            if(isHighPointOpen)
+                replaceSwingPoint(swingHighPoints, structureHighStartIndex, structureHigh, swingHighPointColor, label.style_triangledown)
+            else
+                pushSwingPoint(swingHighPoints, structureHighStartIndex, structureHigh, swingHighPointColor, label.style_triangledown)
+                isHighPointOpen := true
+        // Mirrored: the search continues - keep the live Fibonacci following this rejected value.
+        if(isFiboToShow and not na(liveFibo0Line))
+            updateLiveFibo(liveFibo071Line, liveFibo0Line, liveFibo071Label, liveFibo0Label, fiboFixedPrice, structureHigh)
+        // Mirrored: the pending order follows this rejected value too.
+        if(isTradeToShow and not na(pendingEntry))
+            pendingEntry := fiboFixedPrice + (structureHigh - fiboFixedPrice) * 0.29
+            pendingTp := structureHigh
+        isBOSAlert := false
+        isCHOCHAlert := false
+    else
+        // Update values for new structure - reuse the already-finalized candidate low computed above.
+        structureDirection := 2
+        structureHighStartIndex := bar_index
+        structureLowStartIndex  := candidateLowStartIndex
+        structureHigh := high
+        structureLow  := candidateLow
+
+        // If the low was still open (direction just flipped), it's already correctly tracked via trailing - just close it.
+        // If it was already frozen (repeat break in the same direction), this lookback found a genuinely new trough - mark it.
+        if(isSwingPointsToShow)
+            if(not isLowPointOpen)
+                pushSwingPoint(swingLowPoints, structureLowStartIndex, structureLow, swingLowPointColor, label.style_triangleup)
+            pushSwingPoint(swingHighPoints, structureHighStartIndex, structureHigh, swingHighPointColor, label.style_triangledown)
+        isLowPointOpen := false
+        isHighPointOpen := true
+
+        // No longer pruned to a "number of break to show" cap (see the removed structHistoryNbr input) -
+        // BOS/CHoCH lines and labels now simply accumulate.
+
+        // The swing high just got broken: BOS if continuing a bullish trend, CHoCH if reversing from
+        // bearish. Drawn at the level that was actually broken (previousHigh/previousHighStartIndex),
+        // not the freshly-opened high that replaces it above.
+        if(previousDirection == 2)
+            array.push(structureLines, line.new(previousHighStartIndex, previousHigh, bar_index, previousHigh, xloc=xloc.bar_index, extend=extend.none, color=bullishBosColor, style=bosLineStyle, width=bosLineWidth))
+            array.push(structureLabels, label.new((bar_index + previousHighStartIndex) / 2, previousHigh, text="BOS", style=label.style_none, textcolor=bullishBosColor))
+            isBOSAlert := true
+            isCHOCHAlert := false
+        else
+            array.push(structureLines, line.new(previousHighStartIndex, previousHigh, bar_index, previousHigh, xloc=xloc.bar_index, extend=extend.none, color=bullishChochColor, style=chochLineStyle, width=chochLineWidth))
+            array.push(structureLabels, label.new((bar_index + previousHighStartIndex) / 2, previousHigh, text="CHoCH", style=label.style_none, textcolor=bullishChochColor))
+            isCHOCHAlert := true
+            isBOSAlert := false
+
+
+        // Mirrored: freeze whatever was live before this event - bearish (previousDirection==1,
+        // tracking LOW) freezes at swingLowPrice; bullish (previousDirection==2) freezes at
+        // swingHighPrice. Then start a new live bullish Fibonacci (LOW -> HIGH) for the leg opening
+        // now, using the just-fixed candidateLow as 1.0 and HIGH's fresh value as 0.0.
+        if(not na(liveFibo0Line))
+            // Same reasoning as the mirrored freeze above: release at the live fib's last correctly
+            // tracked position instead of recomputing swingLowPrice/swingHighPrice on this confirm bar,
+            // which would wrongly pull in this bar's own new extreme.
+            // Whatever pending order was tracking this fib never got hit - discard it outright; a
+            // fresh one (if any) gets created below alongside the new live fib.
+            if(isTradeToShow)
+                pendingEntry := na
+                pendingSl := na
+                pendingTp := na
+            releaseLiveFibo(fiboLines, fiboLabels, liveFibo1Line, liveFibo071Line, liveFibo0Line, liveFibo1Label, liveFibo071Label, liveFibo0Label)
+            liveFibo1Line := na
+            liveFibo071Line := na
+            liveFibo0Line := na
+            liveFibo1Label := na
+            liveFibo071Label := na
+            liveFibo0Label := na
+        if(isFiboToShow)
+            // Multi-value return captured via array.get - see the matching comment on the bearish
+            // (isStuctureLowBroken) branch above for why this replaces [a, b, ...] = f() destructuring.
+            fiboResult = createLiveFibo(bar_index, fiboLineLength, candidateLow, structureHigh, fiboColor)
+            liveFibo1Line := array.get(fiboResult, 0)
+            liveFibo071Line := array.get(fiboResult, 1)
+            liveFibo0Line := array.get(fiboResult, 2)
+            liveFibo1Label := array.get(fiboResult, 3)
+            liveFibo071Label := array.get(fiboResult, 4)
+            liveFibo0Label := array.get(fiboResult, 5)
+            fiboFixedPrice := candidateLow
+            // New pending order for this fresh bullish leg - entry at its 0.71, SL at the just-fixed
+            // LOW (1.0), TP at HIGH's fresh developing value (0.0); kept in sync as that value moves.
+            if(isTradeToShow)
+                pendingEntry := candidateLow + (structureHigh - candidateLow) * 0.29
+                pendingSl := candidateLow
+                pendingTp := structureHigh
+                pendingIsLong := true
+else
+    isBOSAlert := false
+    isCHOCHAlert := false
+    // A wick alone must never move a fixed/trailing extreme when body-close mode is on - only a
+    // genuine new close beyond it counts as "price actually made a new extreme" (matching the same
+    // lowStructBreakPrice/highStructBreakPrice the break-detection above already uses). The stored
+    // value still records the real wick, since that's the true price extreme; only the DECISION to
+    // update is body-aware. In wick mode, highStructBreakPrice/lowStructBreakPrice equal high/low, so
+    // this behaves exactly as before.
+    isHighExtended = highStructBreakPrice > structureHigh and (structureDirection == 0 or structureDirection == 2)
+    isLowExtended  = lowStructBreakPrice < structureLow and (structureDirection == 0 or structureDirection == 1)
+
+    if(isHighExtended)
+        structureHigh := high
+        structureHighStartIndex := bar_index
+        // The marker's PRICE/index only: structureHigh/structureHighStartIndex above stay exactly as
+        // the close-gated break threshold. swingHighPrice/structureMaxBar (the single source of truth
+        // defined above) already retroactively scan the raw `high` series over the whole open span, so
+        // the still-open marker shows the true highest wick, not just whichever candle's close
+        // happened to trigger this update.
+        if(isSwingPointsToShow)
+            if(isHighPointOpen)
+                replaceSwingPoint(swingHighPoints, structureMaxBar, swingHighPrice, swingHighPointColor, label.style_triangledown)
+            else
+                pushSwingPoint(swingHighPoints, structureMaxBar, swingHighPrice, swingHighPointColor, label.style_triangledown)
+                isHighPointOpen := true
+        // Keep the live bullish Fibonacci's 0.71/0.0 following the exact same swingHighPrice the
+        // triangle just moved to - the 1.0 LOW anchor and the horizontal x-range never move.
+        if(isFiboToShow and isHighPointOpen and not na(liveFibo0Line))
+            updateLiveFibo(liveFibo071Line, liveFibo0Line, liveFibo071Label, liveFibo0Label, fiboFixedPrice, swingHighPrice)
+        // Keep the pending order's entry/TP following the triangle's new swingHighPrice too.
+        if(isTradeToShow and not na(pendingEntry))
+            pendingEntry := fiboFixedPrice + (swingHighPrice - fiboFixedPrice) * 0.29
+            pendingTp := swingHighPrice
+    else if(isLowExtended)
+        structureLow := low
+        structureLowStartIndex := bar_index
+        // Same as above, mirrored: structureLow/structureLowStartIndex stay the close-gated threshold;
+        // swingLowPrice/structureMinBar (the single source of truth) retroactively find the true
+        // lowest wick over the whole open span.
+        if(isSwingPointsToShow)
+            if(isLowPointOpen)
+                replaceSwingPoint(swingLowPoints, structureMinBar, swingLowPrice, swingLowPointColor, label.style_triangleup)
+            else
+                pushSwingPoint(swingLowPoints, structureMinBar, swingLowPrice, swingLowPointColor, label.style_triangleup)
+                isLowPointOpen := true
+        // Mirrored: keep the live bearish Fibonacci following the triangle's new swingLowPrice.
+        if(isFiboToShow and isLowPointOpen and not na(liveFibo0Line))
+            updateLiveFibo(liveFibo071Line, liveFibo0Line, liveFibo071Label, liveFibo0Label, fiboFixedPrice, swingLowPrice)
+        // Mirrored: keep the pending order following the triangle's new swingLowPrice.
+        if(isTradeToShow and not na(pendingEntry))
+            pendingEntry := fiboFixedPrice + (swingLowPrice - fiboFixedPrice) * 0.29
+            pendingTp := swingLowPrice
+
+//
+//
+// ==========================================================================================
+//                              TRADE VISUALIZATION PROCESSING
+// ==========================================================================================
+//
+//
+if(isTradeToShow)
+    // Pending -> running: the pending order always mirrors the currently-live Fibonacci's 0.71/1.0/0.0
+    // (created and kept in sync alongside every createLiveFibo/updateLiveFibo call above), and fires
+    // the instant price wicks to that entry. If its swing point instead gets genuinely confirmed
+    // without ever being touched, it's discarded up in the freeze blocks instead - we only ever trade
+    // the current range's Fibonacci, never a stale one.
+    if(not na(pendingEntry) and low <= pendingEntry and high >= pendingEntry)
+        slTop = pendingIsLong ? pendingEntry : pendingSl
+        slBottom = pendingIsLong ? pendingSl : pendingEntry
+        tpTop = pendingIsLong ? pendingTp : pendingEntry
+        tpBottom = pendingIsLong ? pendingEntry : pendingTp
+        slBox = box.new(left=bar_index, top=slTop, right=bar_index, bottom=slBottom, border_color=tradeSlColor, bgcolor=tradeSlColor)
+        tpBox = box.new(left=bar_index, top=tpTop, right=bar_index, bottom=tpBottom, border_color=tradeTpColor, bgcolor=tradeTpColor)
+        array.push(runningSl, pendingSl)
+        array.push(runningTp, pendingTp)
+        array.push(runningIsLong, pendingIsLong)
+        array.push(runningSlBox, slBox)
+        array.push(runningTpBox, tpBox)
+
+        // The entry candle's own wick may already reach SL or TP - close out immediately.
+        entryHitSl = pendingIsLong ? low <= pendingSl : high >= pendingSl
+        entryHitTp = pendingIsLong ? high >= pendingTp : low <= pendingTp
+        if(entryHitSl or entryHitTp)
+            lastIdx = array.size(runningSl) - 1
+            array.push(closedTradeBoxes, array.get(runningSlBox, lastIdx))
+            array.push(closedTradeBoxes, array.get(runningTpBox, lastIdx))
+            array.remove(runningSl, lastIdx)
+            array.remove(runningTp, lastIdx)
+            array.remove(runningIsLong, lastIdx)
+            array.remove(runningSlBox, lastIdx)
+            array.remove(runningTpBox, lastIdx)
+
+            // SL takes priority as the conservative assumption when a single bar's wick reaches both.
+            isWin = entryHitTp and not entryHitSl
+            totalTradeCount += 1
+            totalWinCount += isWin ? 1 : 0
+            if(pendingIsLong)
+                longTradeCount += 1
+                longWinCount += isWin ? 1 : 0
+            else
+                shortTradeCount += 1
+                shortWinCount += isWin ? 1 : 0
+
+        pendingEntry := na
+        pendingSl := na
+        pendingTp := na
+
+    // Running: extend to the current bar every bar it stays open, even with the wick; close out
+    // (stop extending, move to history) the bar SL or TP is finally reached.
+    if(array.size(runningSl) > 0)
+        for i = array.size(runningSl) - 1 to 0
+            slPrice = array.get(runningSl, i)
+            tpPrice = array.get(runningTp, i)
+            isLong = array.get(runningIsLong, i)
+            box.set_right(array.get(runningSlBox, i), bar_index)
+            box.set_right(array.get(runningTpBox, i), bar_index)
+            hitSl = isLong ? low <= slPrice : high >= slPrice
+            hitTp = isLong ? high >= tpPrice : low <= tpPrice
+            if(hitSl or hitTp)
+                array.push(closedTradeBoxes, array.get(runningSlBox, i))
+                array.push(closedTradeBoxes, array.get(runningTpBox, i))
+                array.remove(runningSl, i)
+                array.remove(runningTp, i)
+                array.remove(runningIsLong, i)
+                array.remove(runningSlBox, i)
+                array.remove(runningTpBox, i)
+
+                // SL takes priority as the conservative assumption when a single bar's wick reaches both.
+                isWin = hitTp and not hitSl
+                totalTradeCount += 1
+                totalWinCount += isWin ? 1 : 0
+                if(isLong)
+                    longTradeCount += 1
+                    longWinCount += isWin ? 1 : 0
+                else
+                    shortTradeCount += 1
+                    shortWinCount += isWin ? 1 : 0
+
+    // No longer pruned to a "number of trades to show" cap (see the removed tradeHistoryNbr input) -
+    // closed trade SL/TP boxes now simply accumulate.
+
+// Affichage de la structure actuelle
+if(isCurrentStructToShow)
+    // d.delete_line(structureHighLine, na) / d.delete_line(structureLowLine, na) inlined: the original
+    // 2-arg d.delete_line also deleted a paired label, but both real call sites here pass `na` for that
+    // argument (no label involved), so this is exactly line.delete() on its own.
+    line.delete(structureHighLine)
+    line.delete(structureLowLine)
+    structureHighLine := line.new(structureHighStartIndex, structureHigh, bar_index, structureHigh, xloc.bar_index, color=currentStructColor, style = currentStructLineStyle, width = currentStructLineWidth)
+    structureLowLine := line.new(structureLowStartIndex, structureLow, bar_index, structureLow, xloc.bar_index, color=currentStructColor, style = currentStructLineStyle, width = currentStructLineWidth)
+
+// Trade statistics table - win/loss counts and win rates for all triggered trades, split by direction.
+winRateText(_wins, _total) =>
+    _total > 0 ? str.tostring(_wins * 100.0 / _total, "#.##") + "%" : "N/A"
+
+// table.* is a no-op stub on this platform (no on-chart table surface yet - see stdlib.ts), so this
+// renders as a single text label instead of a table.new/table.cell grid.
+if(showStatsTable)
+    if(na(statsLabel))
+        statsLabel := label.new(bar_index, high, text="", style=label.style_label_down, color=color.new(color.black, 20), textcolor=color.white, size=size.normal)
+    statsText = "TRADE STATISTICS | Total " + str.tostring(totalWinCount) + "/" + str.tostring(totalTradeCount) + " (" + winRateText(totalWinCount, totalTradeCount) + ")" + " | Long " + str.tostring(longWinCount) + "/" + str.tostring(longTradeCount) + " (" + winRateText(longWinCount, longTradeCount) + ")" + " | Short " + str.tostring(shortWinCount) + "/" + str.tostring(shortTradeCount) + " (" + winRateText(shortWinCount, shortTradeCount) + ")"
+    label.set_x(statsLabel, bar_index)
+    label.set_y(statsLabel, high)
+    label.set_text(statsLabel, statsText)
+
+alertcondition(condition = isBOSAlert , title = "BOS", message = "BOS")
+alertcondition(condition = isCHOCHAlert , title = "CHOCH",message = "CHOCH")
+
+plot(na)
