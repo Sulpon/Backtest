@@ -11,9 +11,18 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 
-from dotenv import load_dotenv
+# Guarded exactly like main.py's own load_dotenv() call: python-dotenv is a
+# requirements-dev.txt-only dependency (see that file's comment on this
+# import), so its absence in production (Vercel installs requirements.txt
+# only) must stay a no-op, not a module-level ImportError that takes down
+# every route importing this module - confirmed the hard way via a real
+# FUNCTION_INVOCATION_FAILED in production before this guard existed.
+try:
+    from dotenv import load_dotenv
 
-load_dotenv()  # no-op if .env doesn't exist - env vars set another way still work
+    load_dotenv()  # no-op if .env doesn't exist - env vars set another way still work
+except ImportError:
+    pass
 
 
 class MarketDataConfigError(RuntimeError):
