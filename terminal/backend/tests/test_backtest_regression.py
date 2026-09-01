@@ -47,7 +47,7 @@ BACKEND_DIR = os.path.dirname(TESTS_DIR)
 # test lives one directory deeper (tests/), hence BACKEND_DIR here instead
 # of TESTS_DIR, so the resulting DATA_DIR still lands on the repo root.
 DATA_DIR = os.path.join(BACKEND_DIR, "..", "..")
-CSV_PATH = os.path.join(DATA_DIR, "EURUSD60 (1).csv")
+CSV_PATH = os.path.join(DATA_DIR, "EURUSD_H1.csv")
 
 GOLDEN_MANIFEST_PATH = os.path.join(TESTS_DIR, "fixtures", "eurusd_1h_backtest_golden.json")
 
@@ -78,7 +78,7 @@ def test_csv_path_matches_build_db_pys_eurusd_1h_source():
     """Sanity check on the path-construction logic itself, so a future
     change to build_db.py's directory layout fails loudly here instead of
     this test silently reading the wrong (or a nonexistent) file."""
-    assert os.path.basename(CSV_PATH) == "EURUSD60 (1).csv"
+    assert os.path.basename(CSV_PATH) == "EURUSD_H1.csv"
     assert os.path.exists(CSV_PATH), f"expected EURUSD 1h source CSV at {CSV_PATH}"
 
 

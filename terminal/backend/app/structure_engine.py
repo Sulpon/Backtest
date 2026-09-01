@@ -109,9 +109,21 @@ def detect_liquidity(swing_points, tolerance_pct=0.0006):
     return pools(highs, 'sell_side') + pools(lows, 'buy_side')
 
 
+def _drop_header_row_if_present(parts: pd.DataFrame) -> pd.DataFrame:
+    # Some broker exports include a "Time\tOpen\tHigh\t..." header line;
+    # others (the original MT4-style exports) don't. Detect by trying to
+    # parse row 0's "open" field as a float rather than assuming either way.
+    try:
+        float(parts.iloc[0, 1])
+    except ValueError:
+        return parts.iloc[1:].reset_index(drop=True)
+    return parts
+
+
 def _load_ohlcv(csv_path: str) -> pd.DataFrame:
     raw = pd.read_csv(csv_path, header=None, names=['raw'])
     parts = raw['raw'].str.split('\t', expand=True)
+    parts = _drop_header_row_if_present(parts)
     return pd.DataFrame({
         'time': pd.to_datetime(parts[0]),
         'open': parts[1].astype(float),
@@ -225,6 +237,7 @@ def run_backtest(csv_path: str, config: BacktestConfig | None = None) -> dict:
     # -----------------------------------------------------------------------
     raw = pd.read_csv(csv_path, header=None, names=['raw'])
     parts = raw['raw'].str.split('\t', expand=True)
+    parts = _drop_header_row_if_present(parts)
     df = pd.DataFrame({
         'time': pd.to_datetime(parts[0]),
         'open': parts[1].astype(float),

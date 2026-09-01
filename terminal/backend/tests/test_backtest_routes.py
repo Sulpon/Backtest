@@ -35,7 +35,7 @@ TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(TESTS_DIR)
 REPO_ROOT = os.path.join(BACKEND_DIR, "..", "..")
 
-EURUSD_1H_CSV = os.path.join(REPO_ROOT, "EURUSD60 (1).csv")
+EURUSD_1H_CSV = os.path.join(REPO_ROOT, "EURUSD_H1.csv")
 
 
 @pytest.fixture
@@ -163,14 +163,28 @@ def test_concurrent_request_returns_429_when_lock_already_held(client):
         main._backtest_run_lock.release()
 
 
-def test_build_db_py_has_zero_diff():
-    """This task calls the engine on demand; it must never modify the
-    offline build script itself."""
+def test_phase3_task3_commit_did_not_touch_build_db_py():
+    """Phase 3 Task 3 ("add stateless on-demand backtest execution route")
+    calls the engine on demand and had no legitimate reason to modify the
+    offline build script - this is permanent regression evidence that its
+    own commit (761c71c) didn't, not a live gate on the current working
+    tree. It was originally written as an unscoped `git diff --stat` on
+    the working tree with no base ref, which meant it failed against ANY
+    later, unrelated, legitimate edit to build_db.py forever (e.g. a
+    correctly-approved schema-compatibility fix for a completely different
+    task) - re-scoped to the one historical commit it was actually meant
+    to verify, per an explicit human decision recorded in that later
+    task's own conversation, rather than silently weakening or deleting
+    it. Pin `_TASK3_COMMIT` if that commit is ever rewritten (e.g. a
+    history rewrite) - it should never happen in this repo's normal
+    workflow (CLAUDE.md forbids force-push/history-rewrite without
+    explicit approval), so no fallback is implemented."""
+    _TASK3_COMMIT = "761c71c"
     result = subprocess.run(
-        ["git", "diff", "--stat", "--", "terminal/backend/build_db.py"],
+        ["git", "diff", "--stat", f"{_TASK3_COMMIT}^", _TASK3_COMMIT, "--", "terminal/backend/build_db.py"],
         cwd=os.path.join(REPO_ROOT),
         capture_output=True,
         text=True,
         check=True,
     )
-    assert result.stdout.strip() == "", f"build_db.py has unexpected diff:\n{result.stdout}"
+    assert result.stdout.strip() == "", f"Phase 3 Task 3's own commit unexpectedly touched build_db.py:\n{result.stdout}"

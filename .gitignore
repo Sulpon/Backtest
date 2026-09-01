@@ -2,6 +2,10 @@
 EURUSD*.csv
 GBPUSD*.csv
 XAUUSD*.csv
+XAGUSD*.csv
+USDCAD*.csv
+USDCHF*.csv
+USDJPY*.csv
 
 # Claude Code local tool state - not project source, EXCEPT the
 # project-specific autonomous-dev-agent infrastructure below, which is

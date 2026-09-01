@@ -36,34 +36,29 @@ SYMBOL_LABELS = {
     "EURUSD": "EUR/USD",
     "GBPUSD": "GBP/USD",
     "XAUUSD": "XAU/USD (Gold)",
+    "XAGUSD": "XAG/USD (Silver)",
+    "USDCAD": "USD/CAD",
+    "USDCHF": "USD/CHF",
+    "USDJPY": "USD/JPY",
 }
 
-# (symbol, timeframe) -> csv filename, relative to the repo root. Filenames
-# are exactly whatever the MT4-style export produced, irregular " (1)"
-# suffixes included - not worth renaming the source files just to make this
-# table tidier.
+# (symbol, timeframe) -> csv filename, relative to the repo root. This is the
+# broker-export naming convention the current source files actually use -
+# "{SYMBOL}_{MT-STYLE-SUFFIX}.csv" - not worth renaming to make this table
+# tidier. Supersedes an earlier "EURUSD1.csv"/"EURUSD60 (1).csv"-style
+# convention previously used for EURUSD/GBPUSD/XAUUSD only, which is why
+# every symbol below now uses one consistent scheme.
+_TF_SUFFIX = {"1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "4h": "H4", "1d": "D1"}
+
 CSV_FILES = {
-    ("EURUSD", "1m"): "EURUSD1.csv",
-    ("EURUSD", "5m"): "EURUSD5.csv",
-    ("EURUSD", "15m"): "EURUSD15.csv",
-    ("EURUSD", "30m"): "EURUSD30.csv",
-    ("EURUSD", "1h"): "EURUSD60 (1).csv",
-    ("EURUSD", "4h"): "EURUSD240.csv",
-    # EURUSD "1d" intentionally absent - see module docstring.
-    ("GBPUSD", "1m"): "GBPUSD1.csv",
-    ("GBPUSD", "5m"): "GBPUSD5.csv",
-    ("GBPUSD", "15m"): "GBPUSD15.csv",
-    ("GBPUSD", "30m"): "GBPUSD30.csv",
-    ("GBPUSD", "1h"): "GBPUSD60.csv",
-    ("GBPUSD", "4h"): "GBPUSD240.csv",
-    ("GBPUSD", "1d"): "GBPUSD1440.csv",
-    ("XAUUSD", "1m"): "XAUUSD1.csv",
-    ("XAUUSD", "5m"): "XAUUSD5.csv",
-    ("XAUUSD", "15m"): "XAUUSD15.csv",
-    ("XAUUSD", "30m"): "XAUUSD30.csv",
-    ("XAUUSD", "1h"): "XAUUSD60.csv",
-    ("XAUUSD", "4h"): "XAUUSD240.csv",
-    ("XAUUSD", "1d"): "XAUUSD1440.csv",
+    (symbol, tf): f"{symbol}_{suffix}.csv"
+    for symbol in SYMBOL_LABELS
+    for tf, suffix in _TF_SUFFIX.items()
+    # EURUSD "1d" intentionally absent - see module docstring: run_backtest()
+    # derives EURUSD's daily bars by resampling its own 1h input, so also
+    # reading EURUSD_D1.csv would create a second, conflicting source of
+    # truth for the same (EURUSD, 1d) series.
+    if (symbol, tf) != ("EURUSD", "1d")
 }
 
 # Two conventions already existed in this codebase before this file grew to
@@ -79,7 +74,10 @@ EURUSD_1H_1D_KEYS = {("EURUSD", "1h"), ("EURUSD", "1d")}
 
 
 def to_unix(s: str) -> int:
-    return int(datetime.strptime(s, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc).timestamp())
+    # Current exports include seconds ("...:00"); tolerate the older
+    # seconds-less format too rather than assuming every source file agrees.
+    fmt = "%Y-%m-%d %H:%M:%S" if s.count(":") == 2 else "%Y-%m-%d %H:%M"
+    return int(datetime.strptime(s, fmt).replace(tzinfo=timezone.utc).timestamp())
 
 
 def main():
@@ -144,7 +142,11 @@ def main():
 
     def insert_candles(symbol: str, timeframe: str, bars: list):
         rows = [(symbol, timeframe, i, to_unix(b[0]), b[1], b[2], b[3], b[4]) for i, b in enumerate(bars)]
-        con.executemany("INSERT INTO candles VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        con.executemany(
+            "INSERT INTO candles (symbol, timeframe, bar_index, time, open, high, low, close) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
 
     def insert_swings(symbol: str, timeframe: str, swings: list):
         rows = [(symbol, timeframe, s[0], s[1], s[2], s[3]) for s in swings]

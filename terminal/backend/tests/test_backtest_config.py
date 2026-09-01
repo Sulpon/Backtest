@@ -16,7 +16,7 @@ from app.structure_engine import BacktestConfig, run_backtest
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(TESTS_DIR)
 DATA_DIR = os.path.join(BACKEND_DIR, "..", "..")
-CSV_PATH = os.path.join(DATA_DIR, "EURUSD60 (1).csv")
+CSV_PATH = os.path.join(DATA_DIR, "EURUSD_H1.csv")
 
 ALT_RR_RATIO = 1.5
 

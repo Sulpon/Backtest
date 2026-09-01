@@ -40,28 +40,17 @@ DATA_DIR = os.path.join(BACKEND_DIR, "..", "..")
 # build_db directly and asserts this dict is exactly equal to
 # build_db.CSV_FILES, so drift between the two is a loud test failure
 # rather than a silent divergence or an accidental shared-module coupling.
+# Same broker-export "{SYMBOL}_{MT-STYLE-SUFFIX}.csv" convention build_db.py
+# now uses for all 7 symbols - see that module's own CSV_FILES comment.
+_SYMBOLS = ("EURUSD", "GBPUSD", "XAUUSD", "XAGUSD", "USDCAD", "USDCHF", "USDJPY")
+_TF_SUFFIX = {"1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "4h": "H4", "1d": "D1"}
+
 CSV_FILES = {
-    ("EURUSD", "1m"): "EURUSD1.csv",
-    ("EURUSD", "5m"): "EURUSD5.csv",
-    ("EURUSD", "15m"): "EURUSD15.csv",
-    ("EURUSD", "30m"): "EURUSD30.csv",
-    ("EURUSD", "1h"): "EURUSD60 (1).csv",
-    ("EURUSD", "4h"): "EURUSD240.csv",
+    (symbol, tf): f"{symbol}_{suffix}.csv"
+    for symbol in _SYMBOLS
+    for tf, suffix in _TF_SUFFIX.items()
     # EURUSD "1d" intentionally absent - see build_db.py's module docstring.
-    ("GBPUSD", "1m"): "GBPUSD1.csv",
-    ("GBPUSD", "5m"): "GBPUSD5.csv",
-    ("GBPUSD", "15m"): "GBPUSD15.csv",
-    ("GBPUSD", "30m"): "GBPUSD30.csv",
-    ("GBPUSD", "1h"): "GBPUSD60.csv",
-    ("GBPUSD", "4h"): "GBPUSD240.csv",
-    ("GBPUSD", "1d"): "GBPUSD1440.csv",
-    ("XAUUSD", "1m"): "XAUUSD1.csv",
-    ("XAUUSD", "5m"): "XAUUSD5.csv",
-    ("XAUUSD", "15m"): "XAUUSD15.csv",
-    ("XAUUSD", "30m"): "XAUUSD30.csv",
-    ("XAUUSD", "1h"): "XAUUSD60.csv",
-    ("XAUUSD", "4h"): "XAUUSD240.csv",
-    ("XAUUSD", "1d"): "XAUUSD1440.csv",
+    if (symbol, tf) != ("EURUSD", "1d")
 }
 
 # ROADMAP.md Phase 3 Decision 2: fib-OTE entry/SL/TP anchoring and A/B/C/D
