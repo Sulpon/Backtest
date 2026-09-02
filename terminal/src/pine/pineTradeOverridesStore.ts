@@ -6,10 +6,14 @@ import { persist } from "zustand/middleware";
  * backtest.recordTrade) are pure recomputed output - re-running the script
  * always regenerates the same trade, there's nowhere to "delete" it from.
  * Removing one via the chart's right-click menu instead records a
- * client-side exclusion here, keyed by the trade's own deterministic id
- * (entry+exit bar), so it stays hidden across future re-runs of the same
- * script - mirroring how journalStore keeps notes independent of the
- * (also regenerated) backtest engine output.
+ * client-side exclusion here, keyed by a composite, indicator-scoped id
+ * (see pineTradesAdapter.ts's pineTradeCompositeId - `${indicatorId}:
+ * ${entry+exit bar}`, never the trade's raw id alone, since two different
+ * indicators can produce the same entry+exit bar for unrelated trades), so
+ * it stays hidden across future re-runs of the same script without ever
+ * hiding another indicator's same-shaped trade - mirroring how
+ * journalStore keeps notes independent of the (also regenerated) backtest
+ * engine output.
  */
 interface PineTradeOverridesStore {
   removed: Record<string, true>;

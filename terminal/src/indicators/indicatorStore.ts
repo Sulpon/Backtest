@@ -9,6 +9,7 @@ export interface IndicatorInstance {
   period: number;
   color: string;
   bbMult?: number; // only meaningful for "bb"
+  visible: boolean;
 }
 
 export const INDICATOR_LABELS: Record<IndicatorType, string> = {
@@ -24,6 +25,7 @@ interface IndicatorStore {
   add: (type: IndicatorType, period: number) => void;
   remove: (id: string) => void;
   updatePeriod: (id: string, period: number) => void;
+  toggleVisible: (id: string) => void;
 }
 
 export const useIndicatorStore = create<IndicatorStore>()(
@@ -40,12 +42,24 @@ export const useIndicatorStore = create<IndicatorStore>()(
               period,
               color: PALETTE[get().active.length % PALETTE.length],
               bbMult: type === "bb" ? 2 : undefined,
+              visible: true,
             },
           ],
         })),
       remove: (id) => set((s) => ({ active: s.active.filter((i) => i.id !== id) })),
       updatePeriod: (id, period) => set((s) => ({ active: s.active.map((i) => (i.id === id ? { ...i, period } : i)) })),
+      toggleVisible: (id) => set((s) => ({ active: s.active.map((i) => (i.id === id ? { ...i, visible: !i.visible } : i)) })),
     }),
-    { name: "terminal.indicators" }
+    {
+      name: "terminal.indicators",
+      version: 1,
+      migrate: (persistedState) => {
+        const state = persistedState as { active?: Array<Partial<IndicatorInstance>> };
+        return {
+          ...state,
+          active: (state.active ?? []).map((i) => ({ ...i, visible: i.visible ?? true })),
+        };
+      },
+    }
   )
 );

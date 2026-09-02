@@ -8,6 +8,7 @@ import { DRAWING_KINDS } from "../drawing/kinds";
 import type { DrawingType } from "../drawing/types";
 import { distToSegment, pointInRect } from "../drawing/geometry";
 import { usePineTradeOverridesStore } from "./pineTradeOverridesStore";
+import { pineTradeCompositeId } from "./pineTradesAdapter";
 import "./PineIndicatorLayer.css";
 
 interface PineIndicatorLayerProps {
@@ -117,6 +118,8 @@ function computeLabelBox(ctx: CanvasRenderingContext2D, text: string, px: number
 interface TradeMenuState {
   x: number;
   y: number;
+  /** Already the composite id (see pineTradeCompositeId) - safe to pass
+   * straight to the override store's remove() without recomposing it. */
   tradeId: string;
 }
 
@@ -174,7 +177,7 @@ export function PineIndicatorLayer({ containerEl, chart, series, results }: Pine
 
         for (const box of boxes) {
           const b = box as Record<string, unknown>;
-          if (typeof b.tradeId === "string" && removedTradeIds[b.tradeId]) continue;
+          if (typeof b.tradeId === "string" && removedTradeIds[pineTradeCompositeId(result.indicator.id, b.tradeId)]) continue;
           const leftT = toTime(b.left as number, b.xloc as string);
           const rightT = toTime(b.right as number, b.xloc as string);
           const x0raw = scale.x(leftT);
@@ -383,12 +386,13 @@ export function PineIndicatorLayer({ containerEl, chart, series, results }: Pine
 
       const list = resultsRef.current;
       for (let ri = list.length - 1; ri >= 0; ri--) {
-        const bars = list[ri].windowedBars;
+        const result = list[ri];
+        const bars = result.windowedBars;
         if (bars.length === 0) continue;
         const avgInterval = avgBarInterval(bars);
         const toTime = (xlocValue: number, xloc: string) =>
           xloc === "bar_time" ? xlocValue / 1000 : barIndexToTime(xlocValue, bars, avgInterval);
-        const { boxes } = list[ri].outputs;
+        const { boxes } = result.outputs;
         for (let i = boxes.length - 1; i >= 0; i--) {
           const b = boxes[i] as Record<string, unknown>;
           if (typeof b.tradeId !== "string") continue;
@@ -401,7 +405,7 @@ export function PineIndicatorLayer({ containerEl, chart, series, results }: Pine
           const x1 = Math.max(x0raw, x1raw);
           if (pointInRect(x, y, x0, y0, x1, y1, 3)) {
             e.preventDefault();
-            setTradeMenu({ x: e.clientX, y: e.clientY, tradeId: b.tradeId });
+            setTradeMenu({ x: e.clientX, y: e.clientY, tradeId: pineTradeCompositeId(result.indicator.id, b.tradeId) });
             return;
           }
         }

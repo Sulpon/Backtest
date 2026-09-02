@@ -1,11 +1,11 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { dataLayer } from "../../data/DataLayer";
-import type { SymbolTimeframeData, Timeframe } from "../../data/types";
+import type { SymbolTimeframeData, Timeframe, Trade } from "../../data/types";
 import { useActiveWorkspace } from "../../workspace/workspaceStore";
 import { useReplayStore } from "../../replay/replayStore";
 import { useJournalStore, useJournalEntry, tradeKey } from "../../journal/journalStore";
-import { usePineIndicators } from "../../pine/usePineIndicators";
-import { collectPineTradesWithSource } from "../../pine/pineTradesAdapter";
+import { usePineIndicators, type PineRunResult } from "../../pine/usePineIndicators";
+import { groupPineTradesByIndicator, pineJournalSourceKey } from "../../pine/pineTradesAdapter";
 import { usePineTradeOverridesStore } from "../../pine/pineTradeOverridesStore";
 import { usePineIndicatorStore } from "../../pine/pineIndicatorStore";
 import { sendTradeReview, type TradeReviewPayload } from "../../telegram/telegramApi";
@@ -214,11 +214,32 @@ function SnapshotPreviewButton({ symbol, timeframe, snapshotWindow }: Omit<Teleg
 // Snapshot buttons are gated by this.
 const TELEGRAM_REVIEW_CUTOFF = Date.UTC(2024, 0, 1) / 1000;
 
+// The backend/EURUSD-1h journal's own selector key - namespaced apart from
+// pineJournalSourceKey's `pine:${id}` shape so the two can never collide.
+const BACKEND_SOURCE = "backend";
+
+interface DisplayRow {
+  /** React list key - the composite id from pineTradesAdapter for a Pine
+   * trade (already globally unique across indicators), or the plain
+   * tradeKey for a backend trade. */
+  reactKey: string;
+  /** journalStore/pineTradeOverridesStore lookup key for THIS row, already
+   * scoped to whichever journal (backend, or a specific indicator) is
+   * currently selected - see tradeKey's doc comment on why a Pine row's
+   * key must include the indicator id. */
+  journalKey: string;
+  trade: Trade;
+  /** null for a backend row - only a Pine row has a PineRunResult to
+   * convert entryBar/exitBar to a real time or inspect drawing output. */
+  source: PineRunResult | null;
+}
+
 export function TradesPanel() {
   const ws = useActiveWorkspace();
   const seek = useReplayStore((s) => s.seek);
   const [dataset, setDataset] = useState<SymbolTimeframeData | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [selectedSource, setSelectedSource] = useState<string>(BACKEND_SOURCE);
   const entries = useJournalStore((s) => s.entries);
 
   useEffect(() => {
@@ -235,23 +256,17 @@ export function TradesPanel() {
   const backendTrades = dataset?.trades ?? [];
   const bars = dataset?.bars ?? [];
 
-  // A Pine indicator that records trades (backtest.recordTrade) takes over
-  // this list entirely while it has any - same reasoning as ChartPane's
-  // pane-header stat: that's what makes "change a setting, see the trade
-  // count update" actually true, rather than showing two disconnected
-  // trade lists side by side. Kept as {trade, source} pairs (not the
-  // plain Trade[] collectPineTrades gives) because the Telegram buttons
-  // below need each trade's own PineRunResult - its entryBar/exitBar index
-  // THAT indicator's windowedBars, not any shared/full-dataset array (see
+  // Each visible Pine indicator that records trades (backtest.recordTrade)
+  // gets its OWN journal below - never flattened together, and never
+  // merged with the backend/EURUSD-1h journal, which is a distinct trust
+  // model (see this repo's docs/ARCHITECTURE.md). Kept as {trade, source}
+  // pairs (not a plain Trade[]) because the Telegram buttons below need
+  // each trade's own PineRunResult - its entryBar/exitBar index THAT
+  // indicator's windowedBars, not any shared/full-dataset array (see
   // tradeReviewPayload.ts's Pine-specific builders).
   const pineResults = usePineIndicators(bars, dataset?.symbol, dataset?.timeframe);
   const removedPineTrades = usePineTradeOverridesStore((s) => s.removed);
-  const pineTradesWithSource = useMemo(
-    () => collectPineTradesWithSource(pineResults, removedPineTrades),
-    [pineResults, removedPineTrades]
-  );
-  const fromPine = pineTradesWithSource.length > 0;
-  const trades = fromPine ? pineTradesWithSource.map((p) => p.trade) : backendTrades;
+  const pineGroups = useMemo(() => groupPineTradesByIndicator(pineResults, removedPineTrades), [pineResults, removedPineTrades]);
   const visiblePineCount = usePineIndicatorStore((s) => s.items.filter((i) => i.visible).length);
   // Distinguishes "still computing" from "genuinely produced zero trades" -
   // both look identical as an empty pineResults array otherwise, and a full
@@ -259,10 +274,65 @@ export function TradesPanel() {
   // pending run on the shared worker - see usePineIndicators.ts).
   const pineComputing = visiblePineCount > 0 && pineResults.length === 0;
 
+  // A tab per journal: the backend/EURUSD-1h one (always present) plus one
+  // per currently-visible Pine indicator that has actually produced a
+  // result (even with zero trades so far - the tab exists so the user can
+  // watch it fill in). Falls back to the backend tab the moment a
+  // previously-selected indicator's tab disappears (hidden/removed), so
+  // "selectedSource" never points at a journal that no longer exists.
+  const sourceTabs = useMemo(
+    () => [
+      { key: BACKEND_SOURCE, label: `Backend (${ws.symbol} 1h)` },
+      ...pineGroups.map((g) => ({ key: pineJournalSourceKey(g.indicator.id), label: g.indicator.name })),
+    ],
+    [ws.symbol, pineGroups]
+  );
+  useEffect(() => {
+    if (!sourceTabs.some((t) => t.key === selectedSource)) setSelectedSource(BACKEND_SOURCE);
+  }, [sourceTabs, selectedSource]);
+
+  function selectSource(key: string) {
+    setSelectedSource(key);
+    setExpanded(null);
+  }
+
+  const fromPine = selectedSource !== BACKEND_SOURCE;
+  const selectedPineGroup = fromPine ? pineGroups.find((g) => pineJournalSourceKey(g.indicator.id) === selectedSource) ?? null : null;
+
+  const rows: DisplayRow[] = useMemo(() => {
+    if (!fromPine) {
+      return backendTrades.map((t) => {
+        const key = tradeKey(ws.symbol, t.entryBar);
+        return { reactKey: key, journalKey: key, trade: t, source: null };
+      });
+    }
+    if (!selectedPineGroup) return [];
+    return selectedPineGroup.trades.map((p) => ({
+      reactKey: p.id,
+      journalKey: tradeKey(ws.symbol, p.trade.entryBar, selectedPineGroup.indicator.id),
+      trade: p.trade,
+      source: p.source,
+    }));
+  }, [fromPine, backendTrades, selectedPineGroup, ws.symbol]);
+
   const canJump = ws.timeframe === "1h";
 
   return (
     <div className="panel-scroll">
+      {sourceTabs.length > 1 && (
+        <div className="jr-source-tabs">
+          {sourceTabs.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              className={`jr-source-tab${selectedSource === t.key ? " active" : ""}`}
+              onClick={() => selectSource(t.key)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
       {pineComputing && (
         <div className="panel-dim" style={{ padding: "6px 8px", fontSize: 11 }}>
           Computing the Pine indicator over the full dataset - this can take a minute or more, and longer still if
@@ -271,7 +341,7 @@ export function TradesPanel() {
       )}
       {fromPine && (
         <div className="panel-dim" style={{ padding: "6px 8px", fontSize: 11 }}>
-          Showing trades recorded by a Pine indicator - editing its settings updates this list. Right-click a
+          Showing trades recorded by this Pine indicator - editing its settings updates this list. Right-click a
           position's zone on the chart to remove a trade. "Detected conditions" on a Telegram review are a
           best-effort match against this script's own BOS/CHoCH/FVG labels, not a guarantee.
         </div>
@@ -288,8 +358,8 @@ export function TradesPanel() {
           </tr>
         </thead>
         <tbody>
-          {trades.map((t, i) => {
-            const key = tradeKey(ws.symbol, t.entryBar);
+          {rows.map((row) => {
+            const { trade: t, source, journalKey: key } = row;
             const hasEntry = !!entries[key] && (entries[key].note !== "" || entries[key].tags.length > 0 || entries[key].rating > 0);
             const isOpen = expanded === key;
             // entryBar indexes a different bars array depending on source
@@ -297,9 +367,7 @@ export function TradesPanel() {
             // either way, just an array lookup, so this runs for every
             // row (not just the expanded one) to decide whether the
             // Telegram buttons show at all.
-            const entryTime = fromPine
-              ? pineTradesWithSource[i].source.windowedBars[t.entryBar]?.time
-              : dataset?.bars[t.entryBar]?.time;
+            const entryTime = source ? source.windowedBars[t.entryBar]?.time : dataset?.bars[t.entryBar]?.time;
             const eligibleForTelegram = entryTime != null && entryTime >= TELEGRAM_REVIEW_CUTOFF;
             // Only actually build these (label scans for Pine, etc.) for
             // the one row that's expanded - every other row never needs
@@ -307,8 +375,7 @@ export function TradesPanel() {
             let telegramPayload: TradeReviewPayload | null = null;
             let telegramWindow: ChartSnapshotWindow | null = null;
             if (isOpen && dataset && eligibleForTelegram) {
-              if (fromPine) {
-                const source = pineTradesWithSource[i].source;
+              if (source) {
                 telegramPayload = buildPineTradeReviewPayload(source, dataset.symbol, dataset.timeframe, t);
                 telegramWindow = computePineSnapshotWindow(source, t);
               } else {
@@ -317,7 +384,7 @@ export function TradesPanel() {
               }
             }
             return (
-              <Fragment key={key}>
+              <Fragment key={row.reactKey}>
                 <tr className={canJump ? "clickable" : ""} title={canJump ? "Jump replay to this trade" : "Switch to 1H to jump here"}>
                   <td className="jr-expand-cell">
                     <button
@@ -372,7 +439,7 @@ export function TradesPanel() {
               </Fragment>
             );
           })}
-          {trades.length === 0 && (
+          {rows.length === 0 && (
             <tr>
               <td colSpan={6} className="panel-empty">
                 No trades

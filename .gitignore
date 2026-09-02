@@ -7,6 +7,32 @@ USDCAD*.csv
 USDCHF*.csv
 USDJPY*.csv
 
+# Cross-pair MT4 exports (older "{SYMBOL}{PERIOD}.csv" convention - see
+# build_db.py's own CROSS_PAIR_LABELS comment).
+AUDCAD*.csv
+AUDCHF*.csv
+AUDJPY*.csv
+AUDNZD*.csv
+AUDUSD*.csv
+CADCHF*.csv
+CADJPY*.csv
+CHFJPY*.csv
+EURAUD*.csv
+EURCAD*.csv
+EURCHF*.csv
+EURGBP*.csv
+EURJPY*.csv
+EURNZD*.csv
+GBPAUD*.csv
+GBPCAD*.csv
+GBPCHF*.csv
+GBPJPY*.csv
+GBPNZD*.csv
+NZDCAD*.csv
+NZDCHF*.csv
+NZDJPY*.csv
+NZDUSD*.csv
+
 # Claude Code local tool state - not project source, EXCEPT the
 # project-specific autonomous-dev-agent infrastructure below, which is
 # durable, shared project source (agent briefs + the orchestrator skill)

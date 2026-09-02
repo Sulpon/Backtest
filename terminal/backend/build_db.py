@@ -42,17 +42,30 @@ SYMBOL_LABELS = {
     "USDJPY": "USD/JPY",
 }
 
-# (symbol, timeframe) -> csv filename, relative to the repo root. This is the
-# broker-export naming convention the current source files actually use -
-# "{SYMBOL}_{MT-STYLE-SUFFIX}.csv" - not worth renaming to make this table
-# tidier. Supersedes an earlier "EURUSD1.csv"/"EURUSD60 (1).csv"-style
-# convention previously used for EURUSD/GBPUSD/XAUUSD only, which is why
-# every symbol below now uses one consistent scheme.
+# A second batch of symbols (the broker's cross-pair exports) uses an older
+# MT4 convention - "{SYMBOL}{PERIOD}.csv", no underscore, numeric periods
+# (1/5/15/30/60/240/1440) - rather than the "{SYMBOL}_{TF}.csv" convention
+# above. Both are real, distinct export formats from the same broker for
+# different symbol batches, not a typo - kept as two separate maps below
+# instead of forcing one naming scheme onto files that don't use it.
+CROSS_PAIR_LABELS = {
+    "AUDCAD": "AUD/CAD", "AUDCHF": "AUD/CHF", "AUDJPY": "AUD/JPY", "AUDNZD": "AUD/NZD", "AUDUSD": "AUD/USD",
+    "CADCHF": "CAD/CHF", "CADJPY": "CAD/JPY",
+    "CHFJPY": "CHF/JPY",
+    "EURAUD": "EUR/AUD", "EURCAD": "EUR/CAD", "EURCHF": "EUR/CHF", "EURGBP": "EUR/GBP",
+    "EURJPY": "EUR/JPY", "EURNZD": "EUR/NZD",
+    "GBPAUD": "GBP/AUD", "GBPCAD": "GBP/CAD", "GBPCHF": "GBP/CHF", "GBPJPY": "GBP/JPY", "GBPNZD": "GBP/NZD",
+    "NZDCAD": "NZD/CAD", "NZDCHF": "NZD/CHF", "NZDJPY": "NZD/JPY", "NZDUSD": "NZD/USD",
+}
+SYMBOL_LABELS.update(CROSS_PAIR_LABELS)
+
+# (symbol, timeframe) -> csv filename, relative to the repo root.
 _TF_SUFFIX = {"1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "4h": "H4", "1d": "D1"}
+_CROSS_PAIR_TF_SUFFIX = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "4h": "240", "1d": "1440"}
 
 CSV_FILES = {
     (symbol, tf): f"{symbol}_{suffix}.csv"
-    for symbol in SYMBOL_LABELS
+    for symbol in ("EURUSD", "GBPUSD", "XAUUSD", "XAGUSD", "USDCAD", "USDCHF", "USDJPY")
     for tf, suffix in _TF_SUFFIX.items()
     # EURUSD "1d" intentionally absent - see module docstring: run_backtest()
     # derives EURUSD's daily bars by resampling its own 1h input, so also
@@ -60,6 +73,11 @@ CSV_FILES = {
     # truth for the same (EURUSD, 1d) series.
     if (symbol, tf) != ("EURUSD", "1d")
 }
+CSV_FILES.update({
+    (symbol, tf): f"{symbol}{suffix}.csv"
+    for symbol in CROSS_PAIR_LABELS
+    for tf, suffix in _CROSS_PAIR_TF_SUFFIX.items()
+})
 
 # Two conventions already existed in this codebase before this file grew to
 # cover more than one symbol: intraday timeframes detect swings on closing

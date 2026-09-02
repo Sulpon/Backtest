@@ -5,8 +5,9 @@ import { useReplayStore } from "../replay/replayStore";
 import { useTheme } from "../theme/ThemeProvider";
 import { TOOL_GROUPS } from "../components/toolDefinitions";
 import { pickTool } from "../components/LeftToolRail";
-import { TIMEFRAMES, TIMEFRAME_LABELS, secondaryTimeframe } from "../data/timeframes";
+import { TIMEFRAMES, TIMEFRAME_LABELS } from "../data/timeframes";
 import type { Timeframe } from "../data/types";
+import { applyChartLayout } from "../components/chartLayout";
 
 export interface Command {
   id: string;
@@ -103,23 +104,19 @@ export function useCommands(): Command[] {
         category: "View",
         run: () => {
           const api = useUiStore.getState().dockviewApi;
-          if (!api || api.getPanel("chart-2")) return;
+          if (!api) return;
           // chart-1 owns its own symbol/timeframe (ChartPaneParams) now -
           // pair the new pane with whatever it's ACTUALLY showing, falling
           // back to the workspace default only if chart-1 doesn't exist yet.
+          // Routed through applyChartLayout (same helper the top toolbar's
+          // 1/2/4/8/16 picker uses) so this always lands on a contiguous
+          // chart-1/chart-2 pair rather than duplicating that bookkeeping.
           const chart1Params = api.getPanel("chart-1")?.params as { symbol?: string; timeframe?: Timeframe } | undefined;
           const wsState = useWorkspaceStore.getState();
           const active = wsState.workspaces[wsState.activeWorkspace];
           const symbol = chart1Params?.symbol ?? active.symbol;
           const timeframe = chart1Params?.timeframe ?? active.timeframe;
-          const secondaryTf = secondaryTimeframe(timeframe);
-          api.addPanel({
-            id: "chart-2",
-            component: "chart",
-            title: `${symbol} · ${TIMEFRAME_LABELS[secondaryTf]}`,
-            params: { symbol, timeframe: secondaryTf },
-            position: { referencePanel: "chart-1", direction: "right" },
-          });
+          applyChartLayout(api, 2, symbol, timeframe);
         },
       },
       {
@@ -128,8 +125,12 @@ export function useCommands(): Command[] {
         category: "View",
         run: () => {
           const api = useUiStore.getState().dockviewApi;
-          const p2 = api?.getPanel("chart-2");
-          if (p2) api!.removePanel(p2);
+          if (!api) return;
+          // Collapses back to chart-1 regardless of how many panes are
+          // currently open (not just chart-2) - see applyChartLayout.
+          const wsState = useWorkspaceStore.getState();
+          const active = wsState.workspaces[wsState.activeWorkspace];
+          applyChartLayout(api, 1, active.symbol, active.timeframe);
         },
       }
     );

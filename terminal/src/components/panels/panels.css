@@ -85,6 +85,38 @@
   color: var(--danger);
 }
 
+.jr-source-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.jr-source-tab {
+  height: 22px;
+  padding: 0 9px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.jr-source-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.jr-source-tab.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .jr-expand-cell {
   width: 20px;
   padding: 5px 4px !important;

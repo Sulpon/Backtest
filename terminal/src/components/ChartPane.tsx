@@ -41,6 +41,7 @@ import { PineIndicatorLayer } from "../pine/PineIndicatorLayer";
 import { collectPineTrades } from "../pine/pineTradesAdapter";
 import { usePineTradeOverridesStore } from "../pine/pineTradeOverridesStore";
 import { nearestIndexByTime } from "../lib/bars";
+import { toggleLegendIndicator } from "./indicatorLegend";
 import "./ChartPane.css";
 
 const FVG_FORWARD_BARS = 20;
@@ -173,6 +174,10 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   indicatorsRef.current = indicators;
   const customIndicators = useCustomIndicatorStore((s) => s.items);
   customIndicatorsRef.current = customIndicators;
+  // Used only for the on-chart legend (see indicatorLegend below) - the
+  // pine rendering path still sources visibility-filtered results from
+  // pineResults/usePineIndicators, unchanged.
+  const pineIndicatorItems = usePineIndicatorStore((s) => s.items);
 
   const ws = useActiveWorkspace(); // only used to seed a brand-new pane's initial symbol/timeframe
   const symbols = useSymbols();
@@ -416,18 +421,18 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
       if (ind.type === "sma" || ind.type === "ema") {
         const points = (ind.type === "sma" ? sma : ema)(windowBars, ind.period);
         const s = getPooled(pool, idx++, () => chart.addSeries(LineSeries, { lineWidth: 2, ...lineOpts }));
-        s.applyOptions({ color: ind.color, lineStyle: 0, lineWidth: 2 });
+        s.applyOptions({ color: ind.color, lineStyle: 0, lineWidth: 2, visible: ind.visible });
         s.setData(points.map((p) => ({ time: asTime(p.time), value: p.value })));
       } else {
         const { middle, upper, lower } = bollingerBands(windowBars, ind.period, ind.bbMult ?? 2);
         const mid = getPooled(pool, idx++, () => chart.addSeries(LineSeries, { lineWidth: 2, ...lineOpts }));
-        mid.applyOptions({ color: ind.color, lineStyle: 0, lineWidth: 2 });
+        mid.applyOptions({ color: ind.color, lineStyle: 0, lineWidth: 2, visible: ind.visible });
         mid.setData(middle.map((p) => ({ time: asTime(p.time), value: p.value })));
         const up = getPooled(pool, idx++, () => chart.addSeries(LineSeries, { lineWidth: 1, lineStyle: 2, ...lineOpts }));
-        up.applyOptions({ color: ind.color, lineStyle: 2, lineWidth: 1 });
+        up.applyOptions({ color: ind.color, lineStyle: 2, lineWidth: 1, visible: ind.visible });
         up.setData(upper.map((p) => ({ time: asTime(p.time), value: p.value })));
         const low = getPooled(pool, idx++, () => chart.addSeries(LineSeries, { lineWidth: 1, lineStyle: 2, ...lineOpts }));
-        low.applyOptions({ color: ind.color, lineStyle: 2, lineWidth: 1 });
+        low.applyOptions({ color: ind.color, lineStyle: 2, lineWidth: 1, visible: ind.visible });
         low.setData(lower.map((p) => ({ time: asTime(p.time), value: p.value })));
       }
     }
@@ -1202,13 +1207,16 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   const headerChange = headerBar && headerPrevBar ? headerBar.close - headerPrevBar.close : null;
   const headerChangePct = headerChange != null && headerPrevBar && headerPrevBar.close !== 0 ? (headerChange / headerPrevBar.close) * 100 : null;
 
-  // Active-indicator legend (color dot + name) - reuses the SAME store
-  // subscriptions already in scope for rendering (indicators/
-  // customIndicators/pineResults), no new reads.
+  // Active-indicator legend (color dot + name), interactive: clicking a
+  // chip toggles that indicator's visibility via the owning store, mirroring
+  // TradingView's legend eye toggle. Pine entries are read directly from
+  // pineIndicatorStore's items (not pineResults, which is already filtered
+  // to visible-only upstream in usePineIndicators.ts) so hidden Pine
+  // indicators still show up here, dimmed, with a way to re-enable them.
   const indicatorLegend = [
-    ...indicators.map((ind) => ({ id: `builtin-${ind.id}`, label: ind.type === "sma" || ind.type === "ema" ? `${ind.type.toUpperCase()} ${ind.period}` : `BB ${ind.period}`, color: ind.color })),
-    ...customIndicators.filter((ind) => ind.visible).map((ind) => ({ id: `custom-${ind.id}`, label: ind.name, color: ind.color })),
-    ...pineResults.filter((r) => r.indicator.visible).map((r) => ({ id: `pine-${r.indicator.id}`, label: r.indicator.name, color: "#4f8cff" })),
+    ...indicators.map((ind) => ({ id: `builtin-${ind.id}`, label: ind.type === "sma" || ind.type === "ema" ? `${ind.type.toUpperCase()} ${ind.period}` : `BB ${ind.period}`, color: ind.color, visible: ind.visible })),
+    ...customIndicators.map((ind) => ({ id: `custom-${ind.id}`, label: ind.name, color: ind.color, visible: ind.visible })),
+    ...pineIndicatorItems.map((ind) => ({ id: `pine-${ind.id}`, label: ind.name, color: "#4f8cff", visible: ind.visible })),
   ];
 
   return (
@@ -1251,10 +1259,16 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
         {indicatorLegend.length > 0 && (
           <div className="pane-indicator-legend">
             {indicatorLegend.map((ind) => (
-              <span key={ind.id} className="pane-indicator-chip" title={ind.label}>
+              <button
+                key={ind.id}
+                type="button"
+                className={`pane-indicator-chip${ind.visible ? "" : " hidden"}`}
+                title={`${ind.label} - click to ${ind.visible ? "hide" : "show"}`}
+                onClick={() => toggleLegendIndicator(ind.id)}
+              >
                 <span className="pane-indicator-dot" style={{ background: ind.color }} />
                 {ind.label}
-              </span>
+              </button>
             ))}
           </div>
         )}

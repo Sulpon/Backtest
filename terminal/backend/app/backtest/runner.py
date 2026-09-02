@@ -41,9 +41,21 @@ DATA_DIR = os.path.join(BACKEND_DIR, "..", "..")
 # build_db.CSV_FILES, so drift between the two is a loud test failure
 # rather than a silent divergence or an accidental shared-module coupling.
 # Same broker-export "{SYMBOL}_{MT-STYLE-SUFFIX}.csv" convention build_db.py
-# now uses for all 7 symbols - see that module's own CSV_FILES comment.
+# uses for these 7 symbols - see that module's own CSV_FILES comment. The
+# cross-pair batch below uses build_db.py's OTHER convention instead
+# ("{SYMBOL}{PERIOD}.csv", no underscore) - both mirrored here exactly.
 _SYMBOLS = ("EURUSD", "GBPUSD", "XAUUSD", "XAGUSD", "USDCAD", "USDCHF", "USDJPY")
 _TF_SUFFIX = {"1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "4h": "H4", "1d": "D1"}
+
+_CROSS_PAIR_SYMBOLS = (
+    "AUDCAD", "AUDCHF", "AUDJPY", "AUDNZD", "AUDUSD",
+    "CADCHF", "CADJPY",
+    "CHFJPY",
+    "EURAUD", "EURCAD", "EURCHF", "EURGBP", "EURJPY", "EURNZD",
+    "GBPAUD", "GBPCAD", "GBPCHF", "GBPJPY", "GBPNZD",
+    "NZDCAD", "NZDCHF", "NZDJPY", "NZDUSD",
+)
+_CROSS_PAIR_TF_SUFFIX = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "4h": "240", "1d": "1440"}
 
 CSV_FILES = {
     (symbol, tf): f"{symbol}_{suffix}.csv"
@@ -52,6 +64,11 @@ CSV_FILES = {
     # EURUSD "1d" intentionally absent - see build_db.py's module docstring.
     if (symbol, tf) != ("EURUSD", "1d")
 }
+CSV_FILES.update({
+    (symbol, tf): f"{symbol}{suffix}.csv"
+    for symbol in _CROSS_PAIR_SYMBOLS
+    for tf, suffix in _CROSS_PAIR_TF_SUFFIX.items()
+})
 
 # ROADMAP.md Phase 3 Decision 2: fib-OTE entry/SL/TP anchoring and A/B/C/D
 # daily-bias tagging are validated ONLY for EURUSD 1h - the engine may run

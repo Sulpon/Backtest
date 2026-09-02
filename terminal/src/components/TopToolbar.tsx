@@ -5,10 +5,15 @@ import { useUiStore } from "../workspace/uiStore";
 import { useFocusedChartPane } from "../workspace/useFocusedChartPane";
 import { useReplayStore } from "../replay/replayStore";
 import { ReplaySetupMenu } from "../replay/ReplaySetupMenu";
-import { TIMEFRAMES, TIMEFRAME_LABELS, secondaryTimeframe } from "../data/timeframes";
+import { TIMEFRAMES, TIMEFRAME_LABELS } from "../data/timeframes";
 import type { Timeframe } from "../data/types";
 import { useSymbols } from "../data/useSymbols";
+import { applyChartLayout, countChartPanels } from "./chartLayout";
 import "./TopToolbar.css";
+
+/** Pane counts the layout picker offers - any dockview panel count works via
+ * applyChartLayout, this is just which buttons are shown. */
+const LAYOUT_PANE_COUNTS = [1, 2, 4, 8, 16];
 
 type ChartType = "candles" | "line" | "area";
 const CHART_TYPES: { id: ChartType; glyph: string; label: string }[] = [
@@ -38,7 +43,7 @@ export function TopToolbar() {
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
   const dockviewApi = useUiStore((s) => s.dockviewApi);
   const { theme, toggleTheme } = useTheme();
-  const [layout, setLayoutLocal] = useState("1");
+  const [layout, setLayoutLocal] = useState(1);
   const symbols = useSymbols();
 
   // Every pane owns its own symbol/timeframe now (ChartPaneParams) - this
@@ -59,36 +64,38 @@ export function TopToolbar() {
     else setWorkspaceTimeframe(timeframe);
   }
 
-  // "2" splits into a second chart pane pinned to a different timeframe of
-  // the same symbol as whichever pane is focused, both driven by the same
-  // Replay Engine cursor (see ChartPane's localCursorBar) - though since
-  // every pane now owns its own symbol/timeframe, either one can be
-  // changed independently right after. "4" doesn't have a meaningful
-  // interpretation yet - it'd need to pick 4 specific symbol/timeframe
-  // combinations, which is a real design decision (which 4? user-chosen?)
-  // rather than something to guess at here.
-  function applyLayout(n: string) {
-    setLayoutLocal(n);
+  // Every pane beyond chart-1 starts on displaySymbol, cycling forward
+  // through TIMEFRAMES from displayTimeframe's own slot (wrapping with
+  // modulo past 7 panes) - see chartLayout.ts's timeframeForPaneIndex for
+  // the exact scheme. Positions build a 2-column grid (pane 2 right of
+  // chart-1, everything after that below the pane two slots back) rather
+  // than cascading N panes in one unreadable row - see positionForPane.
+  // Since every pane owns its own symbol/timeframe (ChartPaneParams), all
+  // of this is just a starting point the user can change per-pane right
+  // after.
+  function applyLayout(n: number) {
     const api = dockviewApi;
-    if (n === "1") {
-      const p2 = api?.getPanel("chart-2");
-      if (p2) api!.removePanel(p2);
+    if (!api) {
+      setLayoutLocal(n);
       return;
     }
-    if (n === "2") {
-      if (!api || api.getPanel("chart-2")) return;
-      const secondaryTf = secondaryTimeframe(displayTimeframe);
-      api.addPanel({
-        id: "chart-2",
-        component: "chart",
-        title: `${displaySymbol} · ${TIMEFRAME_LABELS[secondaryTf]}`,
-        params: { symbol: displaySymbol, timeframe: secondaryTf },
-        position: { referencePanel: "chart-1", direction: "right" },
-      });
-      return;
-    }
-    setHint("4-pane needs a specific symbol/timeframe layout picked - not wired up yet, try 2 for now");
+    const resultCount = applyChartLayout(api, n, displaySymbol, displayTimeframe);
+    setLayoutLocal(resultCount);
   }
+
+  // dockviewApi's panel set can also change from outside this control (a
+  // pane closed via its own tab X, a workspace switch restoring a saved
+  // layout, command palette's split/collapse commands) - resync the
+  // highlighted button from the actual pane count rather than trusting
+  // whatever applyLayout last set optimistically. Mirrors watchlistOpen's
+  // onDidLayoutChange subscription below.
+  useEffect(() => {
+    if (!dockviewApi) return;
+    const sync = () => setLayoutLocal(countChartPanels(dockviewApi));
+    sync();
+    const disposable = dockviewApi.onDidLayoutChange(sync);
+    return () => disposable.dispose();
+  }, [dockviewApi]);
 
   const replay = useReplayStore();
 
@@ -247,7 +254,7 @@ export function TopToolbar() {
       <div className="tb-sep" />
 
       <div className="tb-group">
-        {["1", "2", "4"].map((n) => (
+        {LAYOUT_PANE_COUNTS.map((n) => (
           <button key={n} type="button" className={`tb-btn${layout === n ? " active" : ""}`} onClick={() => applyLayout(n)}>
             {n}
           </button>

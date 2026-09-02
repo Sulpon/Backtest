@@ -26,11 +26,25 @@ interface JournalStore {
   setRating: (key: string, rating: number) => void;
 }
 
-/** Symbol + entry bar is a stable, unique identity for a trade within the
- * dataset a given build_db.py run produced - the backtest only ever holds
- * one open position at a time, so no two trades share an entry bar. */
-export function tradeKey(symbol: string, entryBar: number): string {
-  return `${symbol}:${entryBar}`;
+/** Symbol + entry bar is a stable, unique identity for a BACKEND trade
+ * within the dataset a given build_db.py run produced - the backtest only
+ * ever holds one open position at a time, so no two backend trades share
+ * an entry bar. This is NOT true across Pine indicators: a Pine trade's
+ * entryBar indexes that indicator's own windowedBars (see PineRunResult's
+ * doc comment), so two different indicators can easily record a trade
+ * with the same entryBar. Passing `indicatorId` scopes the key to that
+ * indicator (matching the `${symbol}:pine:${indicatorId}:${bar}` shape
+ * tradeReviewPayload.ts's buildPineTradeReviewPayload already uses for its
+ * own Telegram tradeId), producing a key format that never collides with
+ * the plain backend-trade key below - callers that omit it (every backend-
+ * trade call site, unchanged) get exactly today's key, so existing
+ * backend-trade journal entries in localStorage are unaffected. Any
+ * already-saved Pine-trade entry keyed under the old `symbol:entryBar`
+ * form (before indicatorId scoping existed) will not be found under its
+ * new key - a one-time loss of pre-existing Pine-trade notes only, not
+ * backend-trade notes. */
+export function tradeKey(symbol: string, entryBar: number, indicatorId?: string): string {
+  return indicatorId ? `${symbol}:pine:${indicatorId}:${entryBar}` : `${symbol}:${entryBar}`;
 }
 
 function patch(entries: Record<string, JournalEntry>, key: string, changes: Partial<JournalEntry>): Record<string, JournalEntry> {
