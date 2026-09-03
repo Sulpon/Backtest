@@ -14,7 +14,7 @@
       "installCommand": "pip install -r requirements.txt && python fetch_db.py",
       "functions": {
         "app/main.py": {
-          "excludeFiles": "{tests/**,.pytest_cache/**,.venv/**,pytest.ini,requirements-dev.txt,build_db.py,sync_market_data.py,fetch_db.py,.env.example,README.md,.gitignore}"
+          "excludeFiles": "{tests/**,.pytest_cache/**,.venv/**,pytest.ini,requirements-dev.txt,build_db.py,export_deploy_db.py,sync_market_data.py,fetch_db.py,data.duckdb,data.duckdb.bak-*,.env.example,README.md,.gitignore}"
         }
       }
     }

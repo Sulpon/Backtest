@@ -1,26 +1,29 @@
 """
-Build-time step for Vercel deployments (see vercel.json's backend
-installCommand) - not part of the deployed function's own runtime, and
-not needed for local development, which already has the real
-data.duckdb from a build_db.py run.
+data.deploy.duckdb -> real file, for Vercel deployments (see vercel.json's
+backend installCommand) - not part of the deployed function's own
+runtime, and not needed for local development, which never reads this
+file at all (app/db.py only opens data.deploy.duckdb when the VERCEL env
+var is set - see that module). data.deploy.duckdb is the small (~60MB),
+30-symbol/1h-4h-1d-only, no-indexes artifact export_deploy_db.py derives
+from the full local data.duckdb (499MB - see that script's own docstring
+for why the full file can never be the thing Vercel actually bundles: it
+alone exceeds Vercel's 225MB function-size limit).
 
 Vercel's Git LFS Support project setting is supposed to fetch the real
-data.duckdb during checkout, but Vercel has a long-standing, undocumented
+tracked file during checkout, but Vercel has a long-standing, undocumented
 gap where LFS-tracked files sometimes deploy as their small pointer-text
 stand-in instead of the real content, even with LFS Support enabled (see
 https://github.com/vercel/next.js/discussions/58352 - open since 2023,
 still unresolved as of a 2025 follow-up) - confirmed happening on this
 project's own deployment. Rather than depend on that, this script
 detects the pointer, fetches the real object directly over plain HTTPS
-from GitHub's public LFS media endpoint (verified working for this repo:
-`curl -I` against it returns the real 55MB Content-Length and an ETag
-matching the pointer's own oid), and atomically replaces the pointer
-with it - failing the build loudly if anything doesn't check out,
-instead of silently deploying a broken database.
+from GitHub's public LFS media endpoint, and atomically replaces the
+pointer with it - failing the build loudly if anything doesn't check
+out, instead of silently deploying a broken database.
 
-Safe to run unconditionally: if data.duckdb is already the real file
-(the normal case for local dev, and also what would happen if Vercel's
-own LFS checkout ever gets fixed), this is a no-op.
+Safe to run unconditionally: if data.deploy.duckdb is already the real
+file (what would happen if Vercel's own LFS checkout ever gets fixed),
+this is a no-op.
 """
 
 from __future__ import annotations
@@ -32,8 +35,8 @@ import urllib.error
 import urllib.request
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BACKEND_DIR, "data.duckdb")
-REPO_RELATIVE_PATH = "terminal/backend/data.duckdb"
+DB_PATH = os.path.join(BACKEND_DIR, "data.deploy.duckdb")
+REPO_RELATIVE_PATH = "terminal/backend/data.deploy.duckdb"
 LFS_POINTER_SIGNATURE = b"version https://git-lfs.github.com/spec/v1"
 
 # Only used if Vercel doesn't expose its System Environment Variables
