@@ -42,6 +42,7 @@ import { collectPineTrades } from "../pine/pineTradesAdapter";
 import { usePineTradeOverridesStore } from "../pine/pineTradeOverridesStore";
 import { nearestIndexByTime } from "../lib/bars";
 import { toggleLegendIndicator } from "./indicatorLegend";
+import { defaultVisibleRangeIndices } from "./chartVisibleRange";
 import "./ChartPane.css";
 
 const FVG_FORWARD_BARS = 20;
@@ -1113,9 +1114,13 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     dataRef.current = data;
     seriesRef.current.setData(data.bars.map((b) => ({ ...b, time: asTime(b.time) })));
 
-    const last = data.bars.length - 1;
-    const from = Math.max(0, last - 300);
-    chartRef.current.timeScale().setVisibleRange({ from: asTime(data.bars[from].time), to: asTime(data.bars[last].time) });
+    // null for zero bars (a pane can legitimately have no data - see
+    // defaultVisibleRangeIndices's own doc comment) - nothing meaningful to
+    // set a visible range to, so skip it rather than index an empty array.
+    const range = defaultVisibleRangeIndices(data.bars.length);
+    if (range) {
+      chartRef.current.timeScale().setVisibleRange({ from: asTime(data.bars[range.from].time), to: asTime(data.bars[range.to].time) });
+    }
 
     renderOverlays(); // also renders markers, windowed to the range just set above
     // eslint-disable-next-line react-hooks/exhaustive-deps
