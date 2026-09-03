@@ -24,6 +24,19 @@ out, instead of silently deploying a broken database.
 Safe to run unconditionally: if data.deploy.duckdb is already the real
 file (what would happen if Vercel's own LFS checkout ever gets fixed),
 this is a no-op.
+
+Also unconditionally removes data.duckdb (the full, un-trimmed, 499MB
+database) if present, regardless of whether it's still an LFS pointer or
+Vercel's LFS Support already converted it to real content - confirmed
+empirically that vercel.json's functions.excludeFiles does NOT reliably
+keep it out of the packaged function on its own (a real deploy still
+hit "Total bundle size (606.84 MB) exceeds the maximum function size
+(225 MB)" - almost exactly data.duckdb's 499MB plus data.deploy.duckdb's
+60MB plus ~50MB of Python deps - with data.duckdb already excluded in
+vercel.json at the time). Deleting it here is deterministic regardless of
+how Vercel's exclude-files mechanism behaves for this "services"-style
+vercel.json shape; nothing at runtime ever needs data.duckdb in
+production (app/db.py only opens it when VERCEL is unset).
 """
 
 from __future__ import annotations
@@ -38,6 +51,11 @@ BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BACKEND_DIR, "data.deploy.duckdb")
 REPO_RELATIVE_PATH = "terminal/backend/data.deploy.duckdb"
 LFS_POINTER_SIGNATURE = b"version https://git-lfs.github.com/spec/v1"
+
+# The full, un-trimmed database - never needed at runtime in production
+# (see module docstring) and too large to risk leaving in the backend
+# directory at package time under any circumstance.
+FULL_DB_PATH = os.path.join(BACKEND_DIR, "data.duckdb")
 
 # Only used if Vercel doesn't expose its System Environment Variables
 # (Project Settings -> Environment Variables -> "Enable access to System
@@ -92,7 +110,29 @@ def sha256_of(path: str) -> str:
     return h.hexdigest()
 
 
+def remove_full_db_if_present() -> None:
+    """Deterministically keeps the 499MB data.duckdb out of the packaged
+    function, independent of vercel.json's excludeFiles (which a real
+    deploy proved doesn't reliably work for this - see module docstring).
+
+    Gated on the VERCEL env var (same signal app/db.py uses) specifically
+    so an accidental local run of this script - it's meant to be Vercel-
+    build-only, but nothing stops a human from running it by hand - can
+    never delete a developer's real, hours-to-rebuild local data.duckdb.
+    Only ever destructive inside an actual Vercel build, where the file
+    is disposable (re-derivable from the repo's LFS-tracked copy, and
+    never read by production anyway - see FULL_DB_PATH's own comment)."""
+    if not os.environ.get("VERCEL"):
+        return
+    if os.path.exists(FULL_DB_PATH):
+        size = os.path.getsize(FULL_DB_PATH)
+        os.remove(FULL_DB_PATH)
+        print(f"Removed {FULL_DB_PATH} ({size} bytes) - not needed in production, kept out of the function bundle.")
+
+
 def main() -> int:
+    remove_full_db_if_present()
+
     pointer = read_pointer(DB_PATH)
     if pointer is None:
         if os.path.exists(DB_PATH):
