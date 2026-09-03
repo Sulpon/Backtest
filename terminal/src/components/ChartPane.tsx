@@ -1175,27 +1175,23 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   // 300 on a 1D one, let alone a different instrument entirely).
   const localReplayBar = !isPrimary && data ? localCursorBar(data.bars, primaryBarTimes, cursorBar) : cursorBar;
 
-  const liveStats = useMemo(() => {
-    if (!replayActive || !data) return null;
-    const resolved = data.trades.filter((t) => t.exitBar <= localReplayBar);
-    return computeLiveStats(resolved, data.stats?.rr ?? 2.45);
-  }, [replayActive, localReplayBar, data]);
-
   // pineTrades is computed earlier (near pineResults) so renderOverlays can
   // also use it - see the comment there.
   const pineStats = useMemo(() => (pineTrades.length > 0 ? computeLiveStats(pineTrades, data?.stats?.rr ?? 2.45) : null), [pineTrades, data]);
 
-  // Gated on dataMatchesPane (see that flag's own doc comment near
-  // pineResults above) for the same reason Pine is: `data` (and so
-  // data.stats/data.trades) still holds the PREVIOUS symbol/timeframe's
-  // values for the brief window between paneSymbol/paneTimeframe changing
-  // and the new fetch actually landing. Without this, the header briefly
-  // showed the old symbol's own native trade count/win-rate under the new
-  // symbol's candles - smaller and shorter-lived than the Pine bug this
-  // was modeled after (a few hundred ms of network time, not ~20s of
-  // interpreter time), but the same class of "stale data presented as
-  // current" the user asked to eliminate everywhere, not just for Pine.
-  const displayStats = dataMatchesPane ? (pineStats ?? liveStats ?? data?.stats ?? null) : null;
+  // Pine-indicator trades ONLY - the pane header never falls back to the
+  // precomputed backend stat (data.stats, e.g. EURUSD 1h's own "209
+  // trades/41.6% WR") or a backend-trade replay-cursor stat anymore: both
+  // are a different symbol/timeframe's or a different trust model's
+  // numbers showing up regardless of what indicators are actually active,
+  // which is exactly what the user asked to stop seeing. No active
+  // indicator producing trades now means no stat block at all (the JSX
+  // below is already `{displayStats && (...)}`), not a fallback number.
+  // Still gated on dataMatchesPane (see that flag's own doc comment near
+  // pineResults above) so a symbol/timeframe switch doesn't briefly show
+  // the previous combo's stats for the ~100-150ms before new Pine results
+  // land.
+  const displayStats = dataMatchesPane ? pineStats : null;
 
   // Chart-header OHLC/change readout. Mirrors applyReplayCursor's own
   // `bars.slice(0, cursorBar + 1)` (replay/applyCursor.ts) using already-
