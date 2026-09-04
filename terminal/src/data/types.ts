@@ -6,6 +6,7 @@ export interface CandleBar {
   high: number;
   low: number;
   close: number;
+  volume?: number; // real per-bar tick volume from the broker export - see build_db.py
 }
 
 export interface SwingPoint {

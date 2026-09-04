@@ -106,7 +106,8 @@ def main():
     con.execute("""
         CREATE TABLE candles (
             symbol VARCHAR, timeframe VARCHAR, bar_index INTEGER,
-            time BIGINT, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE
+            time BIGINT, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
+            volume DOUBLE
         )
     """)
     con.execute("""
@@ -159,10 +160,10 @@ def main():
     con.execute("CREATE TABLE symbols (symbol VARCHAR PRIMARY KEY, label VARCHAR)")
 
     def insert_candles(symbol: str, timeframe: str, bars: list):
-        rows = [(symbol, timeframe, i, to_unix(b[0]), b[1], b[2], b[3], b[4]) for i, b in enumerate(bars)]
+        rows = [(symbol, timeframe, i, to_unix(b[0]), b[1], b[2], b[3], b[4], b[5]) for i, b in enumerate(bars)]
         con.executemany(
-            "INSERT INTO candles (symbol, timeframe, bar_index, time, open, high, low, close) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO candles (symbol, timeframe, bar_index, time, open, high, low, close, volume) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
 

@@ -219,8 +219,13 @@ def compute_structure(csv_path: str, swing_len: int, use_line_source: bool) -> d
     # no such data-dependent behavior, so it's used unconditionally here.
     time_strings = df['time'].dt.strftime('%Y-%m-%d %H:%M')
     return {
-        'bars': [[t, round(o, 5), round(h, 5), round(l, 5), round(c, 5)] for t, o, h, l, c in
-                 zip(time_strings, df['open'], df['high'], df['low'], df['close'])],
+        # Real per-bar volume (tick count, from the broker export's own
+        # 6th CSV column - see _load_ohlcv's own 'volume' field) as a 6th
+        # element on each bar - additive, never read by any swing/BOS/FVG
+        # detection above, so this changes nothing about the computed
+        # structure, only what's carried through to the caller.
+        'bars': [[t, round(o, 5), round(h, 5), round(l, 5), round(c, 5), float(v)] for t, o, h, l, c, v in
+                 zip(time_strings, df['open'], df['high'], df['low'], df['close'], df['volume'])],
         'swingPoints': [[int(s['bar']), round(float(s['price']), 5), s['type'], s['kind']] for s in swing_points if s['bar'] is not None],
         'bosEvents': [[int(b['bar_start']), int(b['bar_end']), round(float(b['price']), 5), b['direction'], b['kind']] for b in bos_events if b['bar_start'] is not None],
         'fvgEvents': [[int(f['bar']), round(f['top'], 5), round(f['bottom'], 5), f['direction']] for f in fvg_events],
@@ -253,7 +258,8 @@ def run_backtest(csv_path: str, config: BacktestConfig | None = None) -> dict:
     # -----------------------------------------------------------------------
     df['date'] = df['time'].dt.date
     daily = df.groupby('date').agg(open=('open', 'first'), high=('high', 'max'),
-                                    low=('low', 'min'), close=('close', 'last')).reset_index()
+                                    low=('low', 'min'), close=('close', 'last'),
+                                    volume=('volume', 'sum')).reset_index()
     daily_date_to_idx = {d: i for i, d in enumerate(daily['date'])}
     df['daily_idx_prev'] = df['date'].map(daily_date_to_idx) - 1
 
@@ -597,8 +603,10 @@ def run_backtest(csv_path: str, config: BacktestConfig | None = None) -> dict:
     ]
 
     return {
-        'bars': [[str(t)[:16], round(o, 5), round(h, 5), round(l, 5), round(c, 5)] for t, o, h, l, c in
-                 zip(df['time'].astype(str), df['open'], df['high'], df['low'], df['close'])],
+        # See compute_structure()'s own comment on this - additive, no
+        # decision logic anywhere above reads volume.
+        'bars': [[str(t)[:16], round(o, 5), round(h, 5), round(l, 5), round(c, 5), float(v)] for t, o, h, l, c, v in
+                 zip(df['time'].astype(str), df['open'], df['high'], df['low'], df['close'], df['volume'])],
         'swingPoints': [[int(s['bar']), round(float(s['price']), 5), s['type'], s['kind']] for s in swing_points if s['bar'] is not None],
         'bosEvents': [[int(b['bar_start']), int(b['bar_end']), round(float(b['price']), 5), b['direction'], b['kind']] for b in bos_events if b['bar_start'] is not None],
         'fibLegs': [[int(f['bar_start']), int(f['bar_end']), round(float(f['lo']), 5), round(float(f['hi']), 5), f['direction'], round(float(f['ote']), 5), f['setup']] for f in fib_legs],
@@ -606,8 +614,8 @@ def run_backtest(csv_path: str, config: BacktestConfig | None = None) -> dict:
         'orderBlocks': [[int(o['bar']), int(o['bar_end']), round(float(o['top']), 5), round(float(o['bottom']), 5), o['direction']] for o in order_blocks],
         'volumeImbalanceEvents': [[int(v['bar']), round(v['top'], 5), round(v['bottom'], 5), v['direction']] for v in volume_imbalance_events],
         'liquidityEvents': [[int(l['bar_start']), int(l['bar_end']), round(float(l['price']), 5), l['direction']] for l in liquidity_events],
-        'dailyBars': [[str(d) + ' 00:00', round(o, 5), round(h, 5), round(l, 5), round(c, 5)] for d, o, h, l, c in
-                      zip(daily['date'].astype(str), daily['open'], daily['high'], daily['low'], daily['close'])],
+        'dailyBars': [[str(d) + ' 00:00', round(o, 5), round(h, 5), round(l, 5), round(c, 5), float(v)] for d, o, h, l, c, v in
+                      zip(daily['date'].astype(str), daily['open'], daily['high'], daily['low'], daily['close'], daily['volume'])],
         'dailySwingPoints': [[int(s['bar']), round(float(s['price']), 5), s['type'], s['kind']] for s in daily_swing_points if s['bar'] is not None],
         'dailyBosEvents': [[int(b['bar_start']), int(b['bar_end']), round(float(b['price']), 5), b['direction'], b['kind']] for b in daily_bos_events if b['bar_start'] is not None],
         'dailyFvgEvents': [[int(f['bar']), round(f['top'], 5), round(f['bottom'], 5), f['direction']] for f in daily_fvg_events],

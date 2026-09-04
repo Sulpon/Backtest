@@ -84,6 +84,7 @@ class CandleBar(BaseModel):
     high: float
     low: float
     close: float
+    volume: float
 
 
 class SwingPoint(BaseModel):
@@ -258,7 +259,7 @@ def get_dataset(
         window_start = 0
 
     bars = con.execute(
-        "SELECT time, open, high, low, close FROM candles "
+        "SELECT time, open, high, low, close, volume FROM candles "
         "WHERE symbol = ? AND timeframe = ? AND bar_index >= ? ORDER BY bar_index",
         [symbol, timeframe, window_start],
     ).fetchall()
@@ -338,7 +339,7 @@ def get_dataset(
     payload = {
         "symbol": symbol,
         "timeframe": timeframe,
-        "bars": [{"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4]} for r in bars],
+        "bars": [{"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]} for r in bars],
         "swingPoints": [{"bar": r[0] - window_start, "price": r[1], "type": r[2], "kind": r[3]} for r in swings],
         "bosEvents": [
             {"barStart": r[0] - window_start, "barEnd": r[1] - window_start, "price": r[2], "direction": r[3], "kind": r[4]}
