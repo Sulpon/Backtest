@@ -1,0 +1,158 @@
+.mc-mode {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mc-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+}
+
+.mc-idle {
+  padding: 24px 10px;
+}
+
+.mc-error {
+  color: var(--danger);
+  text-align: left;
+}
+
+.mc-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 0;
+}
+
+.mc-progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.mc-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s ease-out;
+}
+
+.mc-results {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mc-source-label {
+  font-style: italic;
+}
+
+.mc-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+}
+
+.mc-legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 2px;
+  margin-left: 6px;
+}
+
+.mc-legend-swatch:first-child {
+  margin-left: 0;
+}
+
+.mc-legend-bull {
+  background: var(--bull);
+}
+
+.mc-legend-bear {
+  background: var(--bear);
+}
+
+.mc-legend-highlight {
+  background: var(--highlight);
+}
+
+/* Histogram (Final R Distribution / Max Drawdown Distribution) */
+
+.mc-histogram {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 120px;
+}
+
+.mc-hist-bar {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 1px 1px 0 0;
+}
+
+.mc-hist-bar.pos {
+  background: var(--bull);
+}
+
+.mc-hist-bar.neg {
+  background: var(--bear);
+}
+
+.mc-dist-summary {
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.mc-interpretation-line {
+  margin: 0 0 6px 0;
+  line-height: 1.5;
+}
+
+.mc-interpretation-line:last-child {
+  margin-bottom: 0;
+}
+
+/* Strategy Lab's Custom Distribution editor */
+
+.mc-custom-dist {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 8px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.mc-custom-dist-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.mc-custom-dist-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mc-custom-dist-input {
+  max-width: 70px;
+}
+
+/* Challenge Simulator - Pass Rate / Expected Cost vs Risk charts */
+
+.mc-risk-chart {
+  height: 220px;
+}
+
+.mc-trailing-note {
+  font-size: 11px;
+}

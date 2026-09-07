@@ -3,21 +3,23 @@ import { TradesPanel } from "./panels/TradesPanel";
 import { StatsPanel } from "./panels/StatsPanel";
 import { StrategyPanel } from "./panels/StrategyPanel";
 import { DetailedAnalysisPanel } from "./panels/DetailedAnalysisPanel";
+import { MonteCarloPanel } from "./panels/MonteCarloPanel";
 import "./BottomPanel.css";
 
-type BottomTab = "trades" | "stats" | "strategy" | "detailed";
+type BottomTab = "trades" | "stats" | "strategy" | "detailed" | "montecarlo";
 
 // TradesPanel already IS the combined Trades+Journal view (expand a row to
 // star/tag/note it - see that file) and StatsPanel already IS the combined
-// Performance+Statistics view - so this stays 4 tabs, not more, even though
-// "Strategy"/"Detailed Analysis" each add their own dedicated view:
-// labeling any of these as further separate tabs would imply distinct
-// panels that don't exist.
+// Performance+Statistics view, so those two stay single tabs rather than
+// splitting further - "Strategy"/"Detailed Analysis"/"Monte Carlo" each
+// add their own genuinely distinct dedicated view (historical scan config,
+// exit-time analytics, simulation), so they're separate tabs.
 const TABS: { id: BottomTab; label: string }[] = [
   { id: "trades", label: "Trades & Journal" },
   { id: "stats", label: "Performance" },
   { id: "strategy", label: "Strategy" },
   { id: "detailed", label: "Detailed Analysis" },
+  { id: "montecarlo", label: "Monte Carlo" },
 ];
 
 const STORAGE_KEY = "terminal.bottomPanelHeight";
@@ -155,6 +157,7 @@ export function BottomPanel() {
             {activeTab === "stats" && <StatsPanel />}
             {activeTab === "strategy" && <StrategyPanel />}
             {activeTab === "detailed" && <DetailedAnalysisPanel />}
+            {activeTab === "montecarlo" && <MonteCarloPanel />}
           </div>
         </>
       )}
