@@ -213,3 +213,128 @@ export function computeKpis(trades: ScanTradeRecord[]): DetailedKpis {
     worstDay,
   };
 }
+
+/**
+ * Longest run of consecutive wins, in exitTime order (never entryTime,
+ * per this module's global rule). Reuses the trade's own `result` field
+ * verbatim ("Win"/"Lose", the same representation the Strategy Scanner
+ * already writes to every ScanTradeRecord) - no second definition of what
+ * counts as a win. 0 for an empty input or a set with no wins at all.
+ */
+export function maximumWinningStreak(trades: ScanTradeRecord[]): number {
+  const sorted = [...trades].sort((a, b) => a.exitTime - b.exitTime);
+  let current = 0;
+  let max = 0;
+  for (const t of sorted) {
+    if (t.result === "Win") {
+      current += 1;
+      if (current > max) max = current;
+    } else {
+      current = 0;
+    }
+  }
+  return max;
+}
+
+/** Longest run of consecutive losses, in exitTime order - mirrors
+ * maximumWinningStreak exactly, see that function's doc comment. */
+export function maximumLosingStreak(trades: ScanTradeRecord[]): number {
+  const sorted = [...trades].sort((a, b) => a.exitTime - b.exitTime);
+  let current = 0;
+  let max = 0;
+  for (const t of sorted) {
+    if (t.result === "Lose") {
+      current += 1;
+      if (current > max) max = current;
+    } else {
+      current = 0;
+    }
+  }
+  return max;
+}
+
+/**
+ * Maximum drawdown (in R, never monetary/account-balance terms - the
+ * Strategy Scanner only ever records R-multiples, and this module has no
+ * position-sizing/leverage concept to convert with) observed on the
+ * cumulative-R equity curve, starting from 0R.
+ *
+ * Deliberately built ON TOP OF cumulativeRRSeries() rather than
+ * re-deriving its own sorted/summed sequence - the user's own spec is
+ * explicit that this must never diverge from the Cumulative RR chart's
+ * own curve, and reusing the exact same function is what makes that true
+ * by construction rather than by coincidence (both consume the same
+ * exitTime-ordered, same-timestamp-collapsed points).
+ */
+export function maximumDrawdown(trades: ScanTradeRecord[]): number {
+  const series = cumulativeRRSeries(trades);
+  let peak = 0;
+  let worst = 0;
+  for (const point of series) {
+    if (point.cumulative > peak) peak = point.cumulative;
+    const drawdown = point.cumulative - peak;
+    if (drawdown < worst) worst = drawdown;
+  }
+  return worst;
+}
+
+/** Monday-anchored week key ("YYYY-MM-DD" of that ISO week's Monday, UTC) -
+ * groups any two dates in the same Monday-Sunday week under the same key,
+ * exactly the equivalence classes ISO-8601 weeks define. Anchoring to the
+ * Monday date (rather than computing a canonical ISO week NUMBER) sidesteps
+ * ISO week-numbering's own edge cases (week 53, a week's ISO year
+ * sometimes differing from the calendar year right around Jan 1/Dec 31) -
+ * this module only ever needs a stable grouping key for a denominator
+ * count, never a displayed week number, so the two approaches are
+ * equivalent for every actual use here. Always derived from exitTime via
+ * exitDateParts, per this module's global rule - never entryTime. */
+function weekKeyOf(trade: ScanTradeRecord): string {
+  const { year, month, day } = exitDateParts(trade);
+  const d = new Date(Date.UTC(year, month - 1, day));
+  const mondayFirstWeekday = (d.getUTCDay() + 6) % 7; // 0=Mon..6=Sun
+  d.setUTCDate(d.getUTCDate() - mondayFirstWeekday);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+}
+
+export interface TradeFrequencyAnalytics {
+  avgTradesPerDay: number;
+  avgTradesPerWeek: number;
+  avgTradesPerMonth: number;
+  avgTradesPerYear: number;
+}
+
+/**
+ * Average trades per ACTIVE period only - total filtered trades divided by
+ * the number of unique exit-time day/week/month/year periods that contain
+ * at least one trade, never by every calendar period spanned between the
+ * earliest and latest trade (a period with zero trades is not part of the
+ * denominator). All period membership derived via exitDateParts/weekKeyOf
+ * (exitTime), per this module's global rule. Returns all-zero (never
+ * NaN/Infinity) for an empty input - one shared function rather than four
+ * separate ones, since all four denominators are built from the same
+ * single pass over `trades`.
+ */
+export function tradeFrequencyAnalytics(trades: ScanTradeRecord[]): TradeFrequencyAnalytics {
+  const total = trades.length;
+  if (total === 0) {
+    return { avgTradesPerDay: 0, avgTradesPerWeek: 0, avgTradesPerMonth: 0, avgTradesPerYear: 0 };
+  }
+  const days = new Set<string>();
+  const weeks = new Set<string>();
+  const months = new Set<string>();
+  const years = new Set<number>();
+  for (const t of trades) {
+    const parts = exitDateParts(t);
+    days.add(parts.dateKey);
+    weeks.add(weekKeyOf(t));
+    months.add(parts.monthKey);
+    years.add(parts.year);
+  }
+  return {
+    avgTradesPerDay: total / days.size,
+    avgTradesPerWeek: total / weeks.size,
+    avgTradesPerMonth: total / months.size,
+    avgTradesPerYear: total / years.size,
+  };
+}

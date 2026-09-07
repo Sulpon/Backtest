@@ -7,6 +7,10 @@ import {
   groupByExitDay,
   groupByExitMonth,
   groupByExitYear,
+  maximumDrawdown,
+  maximumLosingStreak,
+  maximumWinningStreak,
+  tradeFrequencyAnalytics,
 } from "./dateAnalytics";
 // Vite-native raw-text import (no Node "fs" - this app has no Node types
 // configured anywhere in tsconfig.app.json, and nothing else in src/ needs
@@ -323,5 +327,280 @@ describe("reconciliation - the same filtered set must agree across every breakdo
     const sumOf = (map: Map<unknown, { totalRR: number }>) => [...map.values()].reduce((s, v) => s + v.totalRR, 0);
     expect(filtered).toHaveLength(3);
     expect(sumOf(groupByExitYear(filtered))).toBeCloseTo(kpis.totalRR);
+  });
+});
+
+describe("maximumWinningStreak", () => {
+  function seq(results: Array<"Win" | "Lose">): ScanTradeRecord[] {
+    return results.map((result, i) => trade({ exitTime: utc(2025, 1, 1) + i * 3600, result, r: result === "Win" ? 1 : -1 }));
+  }
+
+  it("WIN WIN LOSS -> 2", () => {
+    expect(maximumWinningStreak(seq(["Win", "Win", "Lose"]))).toBe(2);
+  });
+
+  it("LOSS WIN WIN WIN LOSS -> 3", () => {
+    expect(maximumWinningStreak(seq(["Lose", "Win", "Win", "Win", "Lose"]))).toBe(3);
+  });
+
+  it("WIN WIN WIN -> 3", () => {
+    expect(maximumWinningStreak(seq(["Win", "Win", "Win"]))).toBe(3);
+  });
+
+  it("LOSS LOSS LOSS -> 0", () => {
+    expect(maximumWinningStreak(seq(["Lose", "Lose", "Lose"]))).toBe(0);
+  });
+
+  it("empty array -> 0", () => {
+    expect(maximumWinningStreak([])).toBe(0);
+  });
+
+  it("the spec's own worked example: WIN WIN LOSS WIN WIN WIN LOSS -> 3", () => {
+    expect(maximumWinningStreak(seq(["Win", "Win", "Lose", "Win", "Win", "Win", "Lose"]))).toBe(3);
+  });
+});
+
+describe("maximumLosingStreak", () => {
+  function seq(results: Array<"Win" | "Lose">): ScanTradeRecord[] {
+    return results.map((result, i) => trade({ exitTime: utc(2025, 1, 1) + i * 3600, result, r: result === "Win" ? 1 : -1 }));
+  }
+
+  it("LOSS LOSS WIN -> 2", () => {
+    expect(maximumLosingStreak(seq(["Lose", "Lose", "Win"]))).toBe(2);
+  });
+
+  it("WIN LOSS LOSS LOSS WIN -> 3", () => {
+    expect(maximumLosingStreak(seq(["Win", "Lose", "Lose", "Lose", "Win"]))).toBe(3);
+  });
+
+  it("LOSS LOSS LOSS -> 3", () => {
+    expect(maximumLosingStreak(seq(["Lose", "Lose", "Lose"]))).toBe(3);
+  });
+
+  it("WIN WIN WIN -> 0", () => {
+    expect(maximumLosingStreak(seq(["Win", "Win", "Win"]))).toBe(0);
+  });
+
+  it("empty array -> 0", () => {
+    expect(maximumLosingStreak([])).toBe(0);
+  });
+
+  it("the spec's own worked example: LOSS LOSS WIN LOSS LOSS LOSS WIN -> 3", () => {
+    expect(maximumLosingStreak(seq(["Lose", "Lose", "Win", "Lose", "Lose", "Lose", "Win"]))).toBe(3);
+  });
+});
+
+describe("maximumDrawdown", () => {
+  function series(rs: number[]): ScanTradeRecord[] {
+    return rs.map((r, i) => trade({ exitTime: utc(2025, 1, 1) + i * 3600, r, result: r >= 0 ? "Win" : "Lose" }));
+  }
+
+  it("the spec's own worked example: +3,+2,-1,-4,+2,-5 -> -8R", () => {
+    expect(maximumDrawdown(series([3, 2, -1, -4, 2, -5]))).toBeCloseTo(-8);
+  });
+
+  it("monotonically increasing equity has zero drawdown: +1,+2,+3 -> 0R", () => {
+    expect(maximumDrawdown(series([1, 2, 3]))).toBe(0);
+  });
+
+  it("monotonically decreasing equity: -1,-2,-3 -> -6R", () => {
+    expect(maximumDrawdown(series([-1, -2, -3]))).toBeCloseTo(-6);
+  });
+
+  it("a later recovery does not erase an earlier, deeper drawdown: +5,-3,+4,-10 -> -10R", () => {
+    expect(maximumDrawdown(series([5, -3, 4, -10]))).toBeCloseTo(-10);
+  });
+
+  it("empty input -> 0R (never a fabricated negative)", () => {
+    expect(maximumDrawdown([])).toBe(0);
+  });
+
+  it("is derived from the SAME cumulativeRRSeries() the Cumulative RR chart uses - not a second, potentially-diverging equity calculation", () => {
+    const trades = series([3, 2, -1, -4, 2, -5]);
+    const points = cumulativeRRSeries(trades);
+    let peak = 0;
+    let expected = 0;
+    for (const p of points) {
+      peak = Math.max(peak, p.cumulative);
+      expected = Math.min(expected, p.cumulative - peak);
+    }
+    expect(maximumDrawdown(trades)).toBeCloseTo(expected);
+  });
+});
+
+describe("regression: streaks and drawdown order by exitTime, never entryTime", () => {
+  it("maximumWinningStreak: exitTime order gives a genuinely different streak than entryTime order would", () => {
+    // 5 trades: by RESULT they are W,W,W,L,L in exitTime order (streak 3),
+    // but their entryTime values are deliberately scattered so sorting by
+    // entryTime instead would give W,L,W,L,W (streak 1) - a full reversal
+    // alone can't disprove an entryTime bug for every metric, so this uses
+    // a genuinely different (non-reversal) permutation.
+    const e1 = trade({ result: "Win", r: 1, exitTime: utc(2025, 1, 10), entryTime: utc(2025, 1, 1) });
+    const e2 = trade({ result: "Win", r: 1, exitTime: utc(2025, 1, 11), entryTime: utc(2025, 1, 3) });
+    const e3 = trade({ result: "Win", r: 1, exitTime: utc(2025, 1, 12), entryTime: utc(2025, 1, 5) });
+    const e4 = trade({ result: "Lose", r: -1, exitTime: utc(2025, 1, 13), entryTime: utc(2025, 1, 2) });
+    const e5 = trade({ result: "Lose", r: -1, exitTime: utc(2025, 1, 14), entryTime: utc(2025, 1, 4) });
+
+    // Sanity-check the setup itself: entryTime order is e1,e4,e2,e5,e3 =
+    // W,L,W,L,W (streak 1); exitTime order is e1,e2,e3,e4,e5 = W,W,W,L,L
+    // (streak 3).
+    const byEntry = [e1, e2, e3, e4, e5].slice().sort((a, b) => a.entryTime - b.entryTime);
+    expect(byEntry.map((t) => t.result)).toEqual(["Win", "Lose", "Win", "Lose", "Win"]);
+
+    expect(maximumWinningStreak([e1, e2, e3, e4, e5])).toBe(3);
+    expect(maximumWinningStreak([e3, e1, e5, e2, e4])).toBe(3); // input array order must not matter either
+  });
+
+  it("maximumDrawdown: exitTime order gives a genuinely different drawdown than entryTime order would (-4R correctly, not -6R)", () => {
+    // entryTime order R sequence: +2,+2,-3,-3 -> equity 2,4,1,-2, peak
+    // 2,4,4,4, drawdown 0,0,-3,-6 -> would wrongly read -6R.
+    // exitTime order R sequence:  +2,-3,+2,-3 -> equity 2,-1,1,-2, peak
+    // 2,2,2,2, drawdown 0,-3,-1,-4 -> the correct -4R.
+    const t1 = trade({ r: 2, result: "Win", entryTime: utc(2025, 1, 1), exitTime: utc(2025, 1, 10) });
+    const t2 = trade({ r: 2, result: "Win", entryTime: utc(2025, 1, 2), exitTime: utc(2025, 1, 12) });
+    const t3 = trade({ r: -3, result: "Lose", entryTime: utc(2025, 1, 3), exitTime: utc(2025, 1, 11) });
+    const t4 = trade({ r: -3, result: "Lose", entryTime: utc(2025, 1, 4), exitTime: utc(2025, 1, 13) });
+
+    const byEntry = [t1, t2, t3, t4].slice().sort((a, b) => a.entryTime - b.entryTime);
+    expect(byEntry.map((t) => t.r)).toEqual([2, 2, -3, -3]); // confirms the wrong-if-entryTime-used value would be -6
+
+    expect(maximumDrawdown([t1, t2, t3, t4])).toBeCloseTo(-4);
+  });
+
+  it("the spec's own example: trade A (entry Jan10/exit Jan20/+2R) then trade B (entry Jan05/exit Jan21/-1R) must process A -> B, by exitTime", () => {
+    const a = trade({ entryTime: utc(2025, 1, 10), exitTime: utc(2025, 1, 20), r: 2, result: "Win" });
+    const b = trade({ entryTime: utc(2025, 1, 5), exitTime: utc(2025, 1, 21), r: -1, result: "Lose" });
+
+    const points = cumulativeRRSeries([a, b]);
+    expect(points.map((p) => p.time)).toEqual([a.exitTime, b.exitTime]); // A's point (exitTime Jan20) precedes B's (Jan21)
+    expect(points.map((p) => p.cumulative)).toEqual([2, 1]);
+    expect(maximumWinningStreak([a, b])).toBe(1); // exitTime order is Win, Lose
+  });
+
+  it("date-range filtering (fromSec/toSec) combined with streaks/drawdown still uses exitTime, not entryTime", () => {
+    // Same 4 trades as the drawdown disambiguation test above, but now
+    // also exercised through filterTrades's own date range to confirm the
+    // two features compose correctly.
+    const t1 = trade({ r: 2, result: "Win", entryTime: utc(2025, 1, 1), exitTime: utc(2025, 1, 10) });
+    const t2 = trade({ r: 2, result: "Win", entryTime: utc(2025, 1, 2), exitTime: utc(2025, 1, 12) });
+    const t3 = trade({ r: -3, result: "Lose", entryTime: utc(2025, 1, 3), exitTime: utc(2025, 1, 11) });
+    const t4 = trade({ r: -3, result: "Lose", entryTime: utc(2025, 1, 4), exitTime: utc(2025, 1, 13) });
+
+    // Range excludes t4 by exitTime (Jan13), even though t4's entryTime
+    // (Jan4) would fall inside a Jan1-Jan4 range.
+    const filtered = filterTrades([t1, t2, t3, t4], "all", "all", utc(2025, 1, 1), utc(2025, 1, 12));
+    expect(filtered).toHaveLength(3);
+    // exitTime order of the surviving 3 trades: t1(+2), t3(-3), t2(+2) ->
+    // equity 2,-1,1; peak 2,2,2; drawdown 0,-3,-1 -> max drawdown -3.
+    expect(maximumDrawdown(filtered)).toBeCloseTo(-3);
+  });
+});
+
+describe("tradeFrequencyAnalytics", () => {
+  it("Test 1: basic daily frequency - Jan1,Jan1,Jan2,Jan5 -> 4 trades / 3 unique days = 1.333...", () => {
+    const trades = [
+      trade({ exitTime: utc(2025, 1, 1, 9) }),
+      trade({ exitTime: utc(2025, 1, 1, 14) }),
+      trade({ exitTime: utc(2025, 1, 2) }),
+      trade({ exitTime: utc(2025, 1, 5) }),
+    ];
+    expect(tradeFrequencyAnalytics(trades).avgTradesPerDay).toBeCloseTo(4 / 3);
+  });
+
+  it("Test 2: same day - Jan1,Jan1,Jan1 -> average trades/day = 3", () => {
+    const trades = [trade({ exitTime: utc(2025, 1, 1, 1) }), trade({ exitTime: utc(2025, 1, 1, 12) }), trade({ exitTime: utc(2025, 1, 1, 23) })];
+    expect(tradeFrequencyAnalytics(trades).avgTradesPerDay).toBe(3);
+  });
+
+  it("Test 3: weekly grouping - Monday-Sunday buckets correctly across multiple ISO weeks", () => {
+    // 2025-01-06 is a Monday. Two trades that Monday + one the following
+    // Sunday (2025-01-12, same week) = 1 unique week. One trade the next
+    // Monday (2025-01-13, a new week) = 2nd unique week.
+    const trades = [
+      trade({ exitTime: utc(2025, 1, 6) }), // Mon, week 1
+      trade({ exitTime: utc(2025, 1, 8) }), // Wed, week 1
+      trade({ exitTime: utc(2025, 1, 12) }), // Sun, still week 1
+      trade({ exitTime: utc(2025, 1, 13) }), // Mon, week 2
+    ];
+    const freq = tradeFrequencyAnalytics(trades);
+    expect(freq.avgTradesPerWeek).toBeCloseTo(4 / 2);
+  });
+
+  it("Test 4: monthly grouping - Jan15,Jan20,Feb1,Feb20 -> 4 trades / 2 unique months = 2", () => {
+    const trades = [
+      trade({ exitTime: utc(2025, 1, 15) }),
+      trade({ exitTime: utc(2025, 1, 20) }),
+      trade({ exitTime: utc(2025, 2, 1) }),
+      trade({ exitTime: utc(2025, 2, 20) }),
+    ];
+    expect(tradeFrequencyAnalytics(trades).avgTradesPerMonth).toBe(2);
+  });
+
+  it("Test 5: yearly grouping - 2024-12-31,2025-01-01,2025-06-01 -> 3 trades / 2 unique years = 1.5", () => {
+    const trades = [trade({ exitTime: utc(2024, 12, 31) }), trade({ exitTime: utc(2025, 1, 1) }), trade({ exitTime: utc(2025, 6, 1) })];
+    expect(tradeFrequencyAnalytics(trades).avgTradesPerYear).toBeCloseTo(1.5);
+  });
+
+  it("Test 6: period membership is determined exclusively by exitTime - a trade entered Jan 31 and closed Feb 1 belongs to February for all four periods", () => {
+    const t = trade({ entryTime: utc(2024, 1, 31), exitTime: utc(2024, 2, 1) });
+    const freq = tradeFrequencyAnalytics([t]);
+    // A single trade is its own sole active day/week/month/year -> every
+    // average is 1, regardless of which period it landed in; the real
+    // proof is exitDateParts's own dedicated regression tests plus this
+    // one's use of a genuinely January-entry/February-exit trade.
+    expect(freq).toEqual({ avgTradesPerDay: 1, avgTradesPerWeek: 1, avgTradesPerMonth: 1, avgTradesPerYear: 1 });
+  });
+
+  it("Test 7: filtering symbols/setups/exit-time date ranges changes the frequency metrics correctly", () => {
+    const trades = [
+      trade({ symbol: "EURUSD", exitTime: utc(2025, 1, 1) }),
+      trade({ symbol: "EURUSD", exitTime: utc(2025, 1, 2) }),
+      trade({ symbol: "GBPUSD", exitTime: utc(2025, 1, 1) }),
+      trade({ symbol: "GBPUSD", exitTime: utc(2025, 1, 3) }),
+    ];
+    const eurOnly = filterTrades(trades, ["EURUSD"], "all", null, null);
+    expect(tradeFrequencyAnalytics(eurOnly).avgTradesPerDay).toBe(1); // 2 trades / 2 unique days
+
+    const rangeOnly = filterTrades(trades, "all", "all", utc(2025, 1, 1), utc(2025, 1, 1));
+    expect(tradeFrequencyAnalytics(rangeOnly).avgTradesPerDay).toBe(2); // only the 2 trades exiting Jan 1
+  });
+
+  it("Test 8: empty dataset -> all four metrics are 0, never NaN/Infinity/undefined", () => {
+    const freq = tradeFrequencyAnalytics([]);
+    expect(freq).toEqual({ avgTradesPerDay: 0, avgTradesPerWeek: 0, avgTradesPerMonth: 0, avgTradesPerYear: 0 });
+    for (const v of Object.values(freq)) {
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+
+  it("Test 9: single trade -> all four averages are 1", () => {
+    const freq = tradeFrequencyAnalytics([trade({ exitTime: utc(2025, 6, 15) })]);
+    expect(freq).toEqual({ avgTradesPerDay: 1, avgTradesPerWeek: 1, avgTradesPerMonth: 1, avgTradesPerYear: 1 });
+  });
+
+  it("Test 10: determinism - the same trade set always produces the same frequency metrics", () => {
+    const trades = [
+      trade({ exitTime: utc(2025, 1, 1) }),
+      trade({ exitTime: utc(2025, 1, 15) }),
+      trade({ exitTime: utc(2025, 3, 1) }),
+    ];
+    const a = tradeFrequencyAnalytics(trades);
+    const b = tradeFrequencyAnalytics(trades);
+    expect(a).toEqual(b);
+  });
+
+  it("reconciliation: Total Trades is the numerator for all four metrics, and the denominator is unique active exit-time periods", () => {
+    const trades = [
+      trade({ exitTime: utc(2025, 1, 5) }),
+      trade({ exitTime: utc(2025, 1, 5) }),
+      trade({ exitTime: utc(2025, 2, 10) }),
+      trade({ exitTime: utc(2026, 1, 1) }),
+    ];
+    const kpis = computeKpis(trades);
+    const freq = tradeFrequencyAnalytics(trades);
+    const uniqueMonths = new Set(trades.map((t) => exitDateParts(t).monthKey)).size;
+    const uniqueYears = new Set(trades.map((t) => exitDateParts(t).year)).size;
+    expect(freq.avgTradesPerMonth).toBeCloseTo(kpis.total / uniqueMonths);
+    expect(freq.avgTradesPerYear).toBeCloseTo(kpis.total / uniqueYears);
   });
 });

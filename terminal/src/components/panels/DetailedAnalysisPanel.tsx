@@ -7,6 +7,10 @@ import {
   groupByExitDay,
   groupByExitMonth,
   groupByExitYear,
+  maximumDrawdown,
+  maximumLosingStreak,
+  maximumWinningStreak,
+  tradeFrequencyAnalytics,
 } from "../../strategy/analysis/dateAnalytics";
 import { CumulativeRRChart } from "./CumulativeRRChart";
 import { MonthlyPerformanceWidget } from "./MonthlyPerformanceWidget";
@@ -64,6 +68,16 @@ export function DetailedAnalysisPanel() {
   const monthlyMap = useMemo(() => groupByExitMonth(filtered), [filtered]);
   const yearlyMap = useMemo(() => groupByExitYear(filtered), [filtered]);
   const cumulativeSeries = useMemo(() => cumulativeRRSeries(filtered), [filtered]);
+  // Streak/Risk + Trading Frequency metrics - each its own pure function in
+  // dateAnalytics.ts, computed on the exact same `filtered` array everything
+  // else above already uses, so they update with every filter change and
+  // never diverge from Cumulative RR/the rest of the KPI row (maxDrawdown in
+  // particular is built ON TOP OF cumulativeSeries's own source function,
+  // not a second equity calculation - see that function's own doc comment).
+  const maxWinStreak = useMemo(() => maximumWinningStreak(filtered), [filtered]);
+  const maxLoseStreak = useMemo(() => maximumLosingStreak(filtered), [filtered]);
+  const maxDrawdown = useMemo(() => maximumDrawdown(filtered), [filtered]);
+  const frequency = useMemo(() => tradeFrequencyAnalytics(filtered), [filtered]);
 
   const now = new Date();
   const availableYears = useMemo(() => [...yearlyMap.keys()].sort((a, b) => a - b), [yearlyMap]);
@@ -171,6 +185,38 @@ export function DetailedAnalysisPanel() {
           ) : (
             <span className="panel-dim">—</span>
           )}
+        </div>
+        <div>
+          <span className="panel-dim">Max Win Streak</span>
+          <span>
+            {maxWinStreak} {maxWinStreak === 1 ? "trade" : "trades"}
+          </span>
+        </div>
+        <div>
+          <span className="panel-dim">Max Loss Streak</span>
+          <span>
+            {maxLoseStreak} {maxLoseStreak === 1 ? "trade" : "trades"}
+          </span>
+        </div>
+        <div>
+          <span className="panel-dim">Max Drawdown</span>
+          <span className={maxDrawdown >= 0 ? "pos" : "neg"}>{signed(maxDrawdown)}</span>
+        </div>
+        <div>
+          <span className="panel-dim">Avg Trades / Day</span>
+          <span>{frequency.avgTradesPerDay.toFixed(2)} / day</span>
+        </div>
+        <div>
+          <span className="panel-dim">Avg Trades / Week</span>
+          <span>{frequency.avgTradesPerWeek.toFixed(2)} / week</span>
+        </div>
+        <div>
+          <span className="panel-dim">Avg Trades / Month</span>
+          <span>{frequency.avgTradesPerMonth.toFixed(2)} / month</span>
+        </div>
+        <div>
+          <span className="panel-dim">Avg Trades / Year</span>
+          <span>{frequency.avgTradesPerYear.toFixed(2)} / year</span>
         </div>
       </div>
 
