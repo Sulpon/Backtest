@@ -60,3 +60,11 @@ export function findChartForSymbol(
 ): RegisteredChart | null {
   return Object.values(panes).find((p) => p.symbol === symbol && p.timeframe === timeframe) ?? null;
 }
+
+/** Every distinct symbol currently shown by at least one registered chart
+ * pane, deduplicated (two panes on the same symbol at different timeframes
+ * count once) - e.g. for a caller that wants to know which symbols need a
+ * live-market-data subscription right now without walking `panes` itself. */
+export function uniqueRegisteredSymbols(panes: Record<string, RegisteredChart>): string[] {
+  return Array.from(new Set(Object.values(panes).map((p) => p.symbol)));
+}

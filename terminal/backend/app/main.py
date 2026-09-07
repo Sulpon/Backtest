@@ -1,10 +1,13 @@
+import asyncio
 import base64
 import binascii
+import contextlib
+import logging
 import os
 import threading
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -552,6 +555,121 @@ def get_marketdata_candles(
             for c in candles
         ],
     }
+
+
+# ============================================================================
+# REAL-TIME FOREX MARKET DATA - "Real-Time Forex Market Data (FXCM
+# Streaming)" plan. Additive over the provider layer above: one
+# MarketDataStreamService per running process, refcounted per-symbol
+# subscriptions fanned out over /ws/market-data. Live ticks/in-progress
+# candles are NEVER persisted (see stream_service.py's module docstring) -
+# this section touches none of market_candles/instruments/data_sync_jobs.
+#
+# CRITICAL DEPLOYMENT NOTE: this backend deploys to Vercel as a serverless
+# function (see vercel.json) - no persistent process, no long-lived
+# background thread, no WebSocket connection surviving between invocations.
+# This works correctly for local dev (`uvicorn app.main:app`) or any future
+# persistent host, but cannot deliver live data once deployed to the
+# current Vercel target. Degrades gracefully there (never crashes, never
+# hangs): the lifespan below simply fails to start the service, and the
+# WebSocket route closes immediately with a clear reason code.
+# ============================================================================
+from .marketdata.stream_service import MarketDataStreamService  # noqa: E402
+
+logger = logging.getLogger(__name__)
+
+
+@contextlib.asynccontextmanager
+async def _marketdata_lifespan(app: FastAPI):
+    """Wired via `app.router.lifespan_context = _marketdata_lifespan` below
+    - NOT via `FastAPI(lifespan=...)` at construction time - because
+    Starlette reads `app.router.lifespan_context` at ASGI startup, not at
+    `FastAPI.__init__` time. That lets this be added here, long after the
+    `app = FastAPI(...)` line near the top of this file, without moving
+    that line or anything between it and here.
+
+    Never lets a startup failure (misconfigured provider, or - on Vercel -
+    this lifespan never actually running the way a persistent process
+    would) crash the app: `app.state.marketdata_stream_service` is simply
+    left `None`, and the WebSocket route below treats that as a normal,
+    reportable "not available" state, the same pattern
+    MarketDataConfigError already uses for /api/marketdata/status."""
+    service: Optional[MarketDataStreamService] = None
+    try:
+        provider = get_provider()
+        loop = asyncio.get_running_loop()
+        service = MarketDataStreamService(provider, loop)
+    except Exception:
+        # Never let a startup failure crash the app (see this function's
+        # own docstring) - but DO log it, so "why is streaming
+        # unavailable" is diagnosable from the server's own logs instead
+        # of silently reducing to a WebSocket close code with zero trail.
+        logger.exception("Market-data streaming failed to start - continuing without it")
+        service = None
+    app.state.marketdata_stream_service = service
+    try:
+        yield
+    finally:
+        if service is not None:
+            service.shutdown()
+
+
+app.router.lifespan_context = _marketdata_lifespan
+
+
+@app.websocket("/ws/market-data")
+async def marketdata_websocket(websocket: WebSocket) -> None:
+    """One browser WebSocket per connection. Protocol:
+    `{"action": "subscribe"|"unsubscribe", "symbol": "EURUSD"}` in;
+    `{"type": "quote"|"candle"|"status"|"error", ...}` out. Subscription is
+    symbol-only (not symbol+timeframe) - one tick stream already produces
+    every LIVE_TIMEFRAMES granularity at once (see aggregator.py); the
+    client filters by timeframe locally. On disconnect, unsubscribes every
+    symbol this connection held, so a stream thread with zero remaining
+    subscribers actually stops (see MarketDataStreamService.unsubscribe)."""
+    await websocket.accept()
+    service: Optional[MarketDataStreamService] = getattr(websocket.app.state, "marketdata_stream_service", None)
+    if service is None:
+        # Graceful-degradation path (see _marketdata_lifespan's docstring) -
+        # covers both "provider misconfigured" and "this host never
+        # actually ran the lifespan" (Vercel serverless).
+        await websocket.close(code=1013, reason="market-data streaming is not available on this deployment")
+        return
+
+    message_queue: asyncio.Queue = asyncio.Queue()
+    subscribed: set[str] = set()
+
+    async def _forward() -> None:
+        while True:
+            message = await message_queue.get()
+            await websocket.send_json(message)
+
+    forward_task = asyncio.create_task(_forward())
+    try:
+        while True:
+            message = await websocket.receive_json()
+            action = message.get("action")
+            symbol = message.get("symbol")
+            if action == "subscribe":
+                if symbol not in SUPPORTED_SYMBOLS:
+                    await message_queue.put({"type": "error", "message": f"Unsupported symbol '{symbol}'"})
+                elif symbol not in subscribed:
+                    service.subscribe(symbol, message_queue)
+                    subscribed.add(symbol)
+            elif action == "unsubscribe":
+                if symbol in subscribed:
+                    service.unsubscribe(symbol, message_queue)
+                    subscribed.discard(symbol)
+            else:
+                await message_queue.put({"type": "error", "message": f"Unknown action {action!r}"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        forward_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await forward_task
+        for symbol in list(subscribed):
+            service.unsubscribe(symbol, message_queue)
 
 
 # ============================================================================

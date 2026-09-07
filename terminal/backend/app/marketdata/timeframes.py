@@ -42,11 +42,18 @@ def is_valid_timeframe(tf: str) -> bool:
     return tf in TIMEFRAME_SECONDS
 
 
-def _bucket_start(ts: int, tf: str) -> int:
+def bucket_start(ts: int, tf: str) -> int:
     """UTC-aligned bucket start for one candle's timestamp. Weekly buckets
     align to Monday 00:00 UTC - a fixed, documented convention for charting
     purposes, not an attempt to match any one broker's session/settlement
-    week (which varies by broker and isn't needed here)."""
+    week (which varies by broker and isn't needed here).
+
+    Public (not `_bucket_start`) because `aggregator.py`'s CandleAggregator
+    also calls this directly for live tick bucketing - reusing the exact
+    same function guarantees a live in-progress 1h (etc.) bucket boundary
+    always agrees with what aggregate_candles() would compute from the same
+    data once it's a stored, historical candle. Never reimplement bucketing
+    a second time."""
     seconds = TIMEFRAME_SECONDS[tf]
     if seconds is not None:
         return ts - (ts % seconds)
@@ -71,7 +78,7 @@ def aggregate_candles(base_candles: Iterable[Candle], target_timeframe: str) -> 
     buckets: dict[int, list[Candle]] = {}
     order: list[int] = []
     for c in base_list:
-        bucket = _bucket_start(c.timestamp_utc, target_timeframe)
+        bucket = bucket_start(c.timestamp_utc, target_timeframe)
         if bucket not in buckets:
             buckets[bucket] = []
             order.append(bucket)

@@ -50,5 +50,14 @@ class MarketDataProvider(ABC):
     def stream_prices(self, symbols: list[str]):
         """Real-time price stream (architecture doc's Milestone 7). Not
         every provider needs this on day one - the default raises so a
-        missing implementation fails loudly instead of silently no-op'ing."""
+        missing implementation fails loudly instead of silently no-op'ing.
+
+        Contract for implementations (see stream_service.py's module
+        docstring for the consumer side of this): returns/yields an
+        iterator of `quotes.MarketQuote`, already normalized via
+        `quotes.TickNormalizer` - never a provider-specific raw shape. The
+        generator must yield at least every ~1s (a heartbeat/duplicate
+        quote is fine) so a caller iterating it in a background thread can
+        check for a requested shutdown promptly, not only whenever the next
+        real tick happens to arrive."""
         raise NotImplementedError(f"{self.name} does not implement streaming yet")

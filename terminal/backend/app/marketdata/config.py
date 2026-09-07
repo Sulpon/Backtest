@@ -106,8 +106,18 @@ def get_provider():
         from .providers.fxcm import FxcmProvider
 
         provider = FxcmProvider(get_fxcm_config())
+    elif name == "mock_stream":
+        # No credentials needed - this is the switch that lets local dev/
+        # tests exercise the whole real-time streaming pipeline
+        # (stream_service.py/aggregator.py/the /ws/market-data route) with
+        # zero credentials, since the real FxcmProvider.stream_prices() is
+        # unverified against a live connection this pass (see that
+        # provider's own docstring).
+        from .providers.mock_stream import MockStreamProvider
+
+        provider = MockStreamProvider()
     else:
         raise MarketDataConfigError(
-            f"Unknown MARKET_DATA_PROVIDER '{name}' - 'oanda' or 'fxcm' are implemented so far."
+            f"Unknown MARKET_DATA_PROVIDER '{name}' - 'oanda', 'fxcm', or 'mock_stream' are implemented so far."
         )
     return provider

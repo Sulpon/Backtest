@@ -13,6 +13,8 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { dataLayer } from "../data/DataLayer";
+import { marketDataSocket } from "../data/MarketDataSocket";
+import { useLiveCandle } from "../data/useLiveMarketData";
 import type { SymbolTimeframeData, Timeframe } from "../data/types";
 import { TIMEFRAMES, TIMEFRAME_LABELS } from "../data/timeframes";
 import { useSymbols } from "../data/useSymbols";
@@ -1167,6 +1169,75 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     prevJumpNonceRef.current = jumpNonce;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replayActive, cursorBar, jumpNonce]);
+
+  // Live market-data subscription: exactly one WS subscription per pane's
+  // CURRENT symbol, independent of timeframe/data-readiness - deliberately
+  // a SEPARATE effect from the chartRegistry-registration effect above
+  // (which depends on `data`, and `data` now changes on every confirmed
+  // live candle close - piggybacking subscribe/unsubscribe onto that
+  // effect would resend a subscribe/unsubscribe pair once per timeframe
+  // period for no benefit, and risks a rapid unsubscribe/resubscribe race
+  // under network jitter). Refcounted inside marketDataSocket itself, so
+  // multiple panes on the same symbol share one backend subscription.
+  useEffect(() => {
+    marketDataSocket.subscribeSymbol(paneSymbol);
+    return () => marketDataSocket.unsubscribeSymbol(paneSymbol);
+  }, [paneSymbol]);
+
+  // A resubscribe (symbol OR timeframe change) must never let a
+  // still-in-flight confirmed-candle append from the PREVIOUS pane
+  // identity land against the new one - see the ref's use below.
+  const lastAppendedConfirmedTimeRef = useRef<number | null>(null);
+  useEffect(() => {
+    lastAppendedConfirmedTimeRef.current = null;
+  }, [paneSymbol, paneTimeframe]);
+
+  const liveCandle = useLiveCandle(paneSymbol, paneTimeframe);
+
+  // Tick path: series.update() for the forming (unconfirmed) bar only -
+  // never touches React state/`data`, so ticks (which can arrive multiple
+  // times per second) never trigger a re-render beyond the native chart
+  // series itself. Gated so this never fires during replay, before the
+  // real history has loaded, or against a pane whose data doesn't (yet)
+  // match its own current symbol/timeframe.
+  useEffect(() => {
+    if (!liveCandle || liveCandle.confirmed) return;
+    if (replayActive || !dataIsFull || !dataMatchesPane || !seriesRef.current) return;
+    seriesRef.current.update({
+      time: asTime(liveCandle.time),
+      open: liveCandle.open,
+      high: liveCandle.high,
+      low: liveCandle.low,
+      close: liveCandle.close,
+    });
+  }, [liveCandle, replayActive, dataIsFull, dataMatchesPane]);
+
+  // Confirmed-close path: append the bar through the EXISTING [data,
+  // dataIsFull] setData effect above (a new `data` object triggers it
+  // exactly like any other new-bar-appended case) rather than a new render
+  // path - usePineIndicators' existing data?.bars-identity dependency then
+  // triggers exactly one normal recompute per confirmed bar, with zero
+  // Pine-layer changes. useLiveCandle collapses forming/confirmed candle
+  // messages into one value, so lastAppendedConfirmedTimeRef is what
+  // prevents appending the same confirmed candle twice if this effect
+  // re-runs for any other reason while `liveCandle` still holds it.
+  useEffect(() => {
+    if (!liveCandle || !liveCandle.confirmed) return;
+    if (replayActive || !dataIsFull || !dataMatchesPane) return;
+    if (lastAppendedConfirmedTimeRef.current === liveCandle.time) return;
+    lastAppendedConfirmedTimeRef.current = liveCandle.time;
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            bars: [
+              ...prev.bars,
+              { time: liveCandle.time, open: liveCandle.open, high: liveCandle.high, low: liveCandle.low, close: liveCandle.close },
+            ],
+          }
+        : prev
+    );
+  }, [liveCandle, replayActive, dataIsFull, dataMatchesPane]);
 
   // for a non-primary pane this is the primary's cursor converted to THIS
   // pane's own bar index - showing the raw primary index in the replay

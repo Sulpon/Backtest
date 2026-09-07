@@ -2,7 +2,32 @@ import { useEffect, useState } from "react";
 import { useActiveWorkspace } from "../workspace/workspaceStore";
 import { useUiStore } from "../workspace/uiStore";
 import { dataLayer } from "../data/DataLayer";
+import { useMarketQuote, useSymbolMarketStatus } from "../data/useLiveMarketData";
 import "./StatusBar.css";
+
+// Real backend-side provider-stream status for one symbol (LIVE/CONNECTING/
+// DISCONNECTED/RECONNECTING/MARKET_CLOSED) - deliberately distinct from the
+// existing provider-configured indicator below (that's "is a provider
+// configured at all," this is "is this SYMBOL's live stream actually
+// receiving updates right now"). `undefined` (no status message yet, e.g.
+// nothing has subscribed to this symbol's stream) intentionally renders as
+// a neutral "no live feed" state, never as LIVE - per the user's explicit
+// "do not show LIVE simply because the connection exists" requirement.
+const STREAM_STATUS_LABEL: Record<string, string> = {
+  live: "live",
+  connecting: "connecting",
+  reconnecting: "reconnecting",
+  disconnected: "disconnected",
+  market_closed: "market closed",
+};
+
+function formatAge(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.round(minutes / 60)}h ago`;
+}
 
 export function StatusBar() {
   const ws = useActiveWorkspace();
@@ -10,6 +35,19 @@ export function StatusBar() {
   const setHint = useUiStore((s) => s.setStatusHint);
   const [providerStatus, setProviderStatus] = useState<{ provider: string; configured: boolean } | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const streamStatus = useSymbolMarketStatus(ws.symbol);
+  const liveQuote = useMarketQuote(ws.symbol);
+
+  // A plain "Xs ago" computed once at render time would freeze between
+  // quotes (e.g. while MARKET_CLOSED, or mid-reconnect) - tick a "now"
+  // value every few seconds so the displayed age keeps advancing even when
+  // no new quote has arrived, per the user's explicit "show last update
+  // time/age" requirement.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 5000);
+    return () => window.clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (!hint) return;
@@ -68,6 +106,22 @@ export function StatusBar() {
           >
             {providerStatus.configured ? "●" : "○"} {providerStatus.provider}
           </button>
+        </>
+      )}
+      {streamStatus && (
+        <>
+          <span className="dim">·</span>
+          <span
+            className={`statusbar-stream statusbar-stream--${streamStatus}`}
+            title={
+              liveQuote
+                ? `${ws.symbol} live feed: ${STREAM_STATUS_LABEL[streamStatus]} - last update ${formatAge(now - liveQuote.timestampMs)}`
+                : `${ws.symbol} live feed: ${STREAM_STATUS_LABEL[streamStatus]}`
+            }
+          >
+            {streamStatus === "live" ? "●" : streamStatus === "market_closed" ? "◐" : "○"} {STREAM_STATUS_LABEL[streamStatus]}
+            {liveQuote && streamStatus === "live" ? ` · ${formatAge(now - liveQuote.timestampMs)}` : ""}
+          </span>
         </>
       )}
       <div className="statusbar-spacer" />

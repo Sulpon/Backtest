@@ -319,7 +319,10 @@ export class ApiDataLayer implements DataLayer {
   }
 }
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8000";
+// Exported (zero behavior change) so MarketDataSocket.ts can derive its
+// WebSocket URL from the same base the REST API layer already uses,
+// instead of re-reading import.meta.env.VITE_API_BASE a second time.
+export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8000";
 
 export const dataLayer: DataLayer =
   import.meta.env.VITE_DATA_LAYER === "static" ? new StaticJsonDataLayer() : new ApiDataLayer(API_BASE);

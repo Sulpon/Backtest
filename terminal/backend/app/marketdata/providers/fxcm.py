@@ -39,15 +39,60 @@ Verified from the docs (not guessed):
     while bid_*/ask_* are exactly what FXCM returned.
 - symbol naming: "EUR/USD" (slash), same convention for metals ("XAU/USD")
 - demo base URL: https://api-demo.fxcm.com, live: https://api.fxcm.com
+
+IMPORTANT - stream_prices() below is even less certain than the REST path
+above, and is UNVERIFIED AGAINST A LIVE CONNECTION (no credentials
+available in the session this was written). Do not treat any of caveats
+3-5 as confirmed - they are this method's most likely source of a real
+protocol mismatch the first time it's actually run against a live account,
+and MUST be reviewed/fixed against the real behavior (with a human's
+explicit go-ahead to connect to a live/demo account - see this project's
+market-data-specialist brief) before this is relied on for anything real:
+  3. The exact event name FXCM emits price updates under. This adapter
+     assumes `"price"` (a guess consistent with the REST docs' informal
+     "the price update event" phrasing) - fxcm-rest's docs describe channel
+     *subscription* but never show the literal Socket.IO event name a
+     client receives ticks on.
+  4. Subscribe-ordering relative to connect. This adapter subscribes from
+     inside the `connect` handler (i.e. after the handshake completes,
+     before returning control to the caller) - if FXCM actually expects the
+     subscribe call before the connect ack, or emitted under a different
+     event name than `"subscribe"`, this is the first place to fix.
+  5. FXCM's own heartbeat/disconnect-detection behavior is undocumented
+     here. This adapter relies on Socket.IO/Engine.IO's own built-in
+     ping/pong (the `python-socketio` client's default behavior) rather
+     than any FXCM-specific heartbeat message, and treats `sio.connected`
+     going False as the only disconnect signal.
+  6. The heartbeat re-yield below (on a quiet-period timeout) reuses the
+     SAME MarketQuote object, including its ORIGINAL timestamp_ms - it does
+     NOT synthesize a fresh "now" timestamp. CandleAggregator buckets by
+     each quote's own timestamp, not wall-clock time, so during a real
+     quiet period longer than one candle's span, the in-progress candle
+     for that timeframe will not confirm/roll over until a genuinely NEW
+     tick arrives with an advanced timestamp - the chart's forming bar
+     would appear to pause rather than close on schedule. MockStreamProvider
+     doesn't hit this (it always stamps a fresh `time.time()` per tick, so
+     this pass's mock-only verification never exercised the gap) - worth
+     deciding, once live-verified, whether the heartbeat should instead
+     synthesize `time.time()` for the re-yielded quote.
 """
 from __future__ import annotations
+
+import queue
 
 import httpx
 
 from ..config import FxcmConfig
 from ..models import Candle, PriceKind
 from ..provider import MarketDataProvider, ProviderInstrument
+from ..quotes import MarketQuote, TickNormalizer
 from ..symbols import SUPPORTED_SYMBOLS, from_fxcm_symbol, to_fxcm_symbol
+
+# How often stream_prices()'s internal queue.get() times out when no new
+# tick has arrived - re-yields the last known quote as a heartbeat at this
+# cadence (still comfortably under provider.py's documented "at least every
+# ~1s" contract), and otherwise just re-checks sio.connected.
+_TICK_POLL_TIMEOUT_SECONDS = 0.5
 
 _TIMEFRAME_TO_PERIOD = {
     "1m": "m1",
@@ -169,6 +214,67 @@ class FxcmProvider(MarketDataProvider):
                 break
         candles.sort(key=lambda c: c.timestamp_utc)
         return candles
+
+    def stream_prices(self, symbols: list[str]):
+        # UNVERIFIED AGAINST A LIVE CONNECTION - see the module docstring's
+        # caveats 3-5 above. Never point this at a real (even demo) FXCM
+        # account without a human explicitly approving that specific
+        # action first - per this project's market-data-specialist brief,
+        # "demo" does not mean "no approval needed."
+        import socketio  # lazy import, matching config.py's own lazy-import-per-provider pattern - never a module-level import
+
+        if not self._authenticated:
+            self._authenticate()
+
+        provider_symbols = {to_fxcm_symbol(s): s for s in symbols}
+        tick_queue: "queue.Queue[dict]" = queue.Queue()
+
+        sio = socketio.Client()
+
+        @sio.event
+        def connect():
+            # Caveat 4 (module docstring): subscribing here, right after the
+            # handshake completes, is this adapter's best guess at the
+            # correct ordering - unconfirmed against a live account.
+            for provider_symbol in provider_symbols:
+                sio.emit("subscribe", {"pairs": provider_symbol})
+
+        @sio.on("price")
+        def on_price(data):
+            # Caveat 3 (module docstring): "price" is an assumed event name.
+            tick_queue.put(data)
+
+        sio.connect(
+            self._config.rest_base_url,
+            socketio_path="socket.io",
+            transports=["websocket"],
+            headers={"Authorization": f"Bearer {self._config.access_token}"},
+        )
+        try:
+            last_quote: MarketQuote | None = None
+            while sio.connected:
+                try:
+                    raw = tick_queue.get(timeout=_TICK_POLL_TIMEOUT_SECONDS)
+                except queue.Empty:
+                    # Caveat 5 (module docstring): no tick within the poll
+                    # window - re-yield the last known quote as a heartbeat
+                    # (provider.py's documented contract) rather than
+                    # blocking indefinitely; `sio.connected` above is the
+                    # actual disconnect signal, not this timeout.
+                    if last_quote is not None:
+                        yield last_quote
+                    continue
+
+                try:
+                    quote = TickNormalizer.from_fxcm(raw)
+                except (KeyError, ValueError, TypeError):
+                    continue  # malformed/unexpected payload shape - drop the tick, never fabricate one
+                if quote.symbol not in provider_symbols.values():
+                    continue  # a tick for a symbol we didn't ask about - ignore, don't forward
+                last_quote = quote
+                yield quote
+        finally:
+            sio.disconnect()
 
 
 def _row_to_candle(row: list, symbol: str, timeframe: str) -> Candle:

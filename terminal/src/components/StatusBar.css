@@ -36,3 +36,20 @@
   cursor: default;
   color: var(--text-faint);
 }
+
+.statusbar-stream--live {
+  color: var(--ok);
+}
+
+.statusbar-stream--connecting,
+.statusbar-stream--reconnecting {
+  color: var(--warn);
+}
+
+.statusbar-stream--disconnected {
+  color: var(--danger);
+}
+
+.statusbar-stream--market_closed {
+  color: var(--text-faint);
+}
