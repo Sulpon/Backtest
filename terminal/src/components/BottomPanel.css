@@ -57,7 +57,25 @@
   color: var(--text);
 }
 
+.bottom-panel-resize-handle {
+  flex: 0 0 auto;
+  height: 5px;
+  margin-top: -1px; /* overlaps the body's own top border so the border stays visible under the handle */
+  cursor: ns-resize;
+  background: transparent;
+  position: relative;
+  z-index: 1;
+}
+
+.bottom-panel-resize-handle:hover,
+.bottom-panel-resize-handle.dragging {
+  background: var(--accent-soft);
+}
+
 .bottom-panel-body {
+  /* Default/fallback only - BottomPanel.tsx always sets an inline height
+     once mounted (persisted resize value, or --bottompanel-h's own value
+     on first visit), which takes precedence over this. */
   height: var(--bottompanel-h);
   flex: 0 0 auto;
   min-height: 0;
