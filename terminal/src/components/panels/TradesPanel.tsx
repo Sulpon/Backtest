@@ -3,11 +3,14 @@ import { dataLayer } from "../../data/DataLayer";
 import type { SymbolTimeframeData, Timeframe, Trade } from "../../data/types";
 import { useActiveWorkspace } from "../../workspace/workspaceStore";
 import { useReplayStore } from "../../replay/replayStore";
-import { useJournalStore, useJournalEntry, tradeKey } from "../../journal/journalStore";
+import { useJournalStore, useJournalEntry, tradeKey, scanTradeKey } from "../../journal/journalStore";
 import { usePineIndicators, type PineRunResult } from "../../pine/usePineIndicators";
 import { groupPineTradesByIndicator, pineJournalSourceKey } from "../../pine/pineTradesAdapter";
 import { usePineTradeOverridesStore } from "../../pine/pineTradeOverridesStore";
 import { usePineIndicatorStore } from "../../pine/pineIndicatorStore";
+import { useStrategyScanStore } from "../../strategy/strategyScanStore";
+import { scanTradesToStatsInput } from "../../strategy/scanStats";
+import { computeLiveStats } from "../../replay/applyCursor";
 import { sendTradeReview, type TradeReviewPayload } from "../../telegram/telegramApi";
 import {
   buildTradeReviewPayload,
@@ -217,6 +220,11 @@ const TELEGRAM_REVIEW_CUTOFF = Date.UTC(2024, 0, 1) / 1000;
 // The backend/EURUSD-1h journal's own selector key - namespaced apart from
 // pineJournalSourceKey's `pine:${id}` shape so the two can never collide.
 const BACKEND_SOURCE = "backend";
+// The Strategy tab's combined multi-symbol scan results - see
+// strategy/strategyScanStore.ts. Namespaced apart from both the shapes
+// above; only shown as a source tab once a scan has actually produced at
+// least one trade (see sourceTabs below).
+const STRATEGY_SOURCE = "strategy-scan";
 
 interface DisplayRow {
   /** React list key - the composite id from pineTradesAdapter for a Pine
@@ -268,6 +276,12 @@ export function TradesPanel() {
   const removedPineTrades = usePineTradeOverridesStore((s) => s.removed);
   const pineGroups = useMemo(() => groupPineTradesByIndicator(pineResults, removedPineTrades), [pineResults, removedPineTrades]);
   const visiblePineCount = usePineIndicatorStore((s) => s.items.filter((i) => i.visible).length);
+  // Strategy tab's combined multi-symbol scan results - see
+  // strategy/strategyScanStore.ts. A plain object subscription (not a
+  // derived array) so this only re-renders on an actual trades change, same
+  // pattern as removedPineTrades above.
+  const scanTradesMap = useStrategyScanStore((s) => s.trades);
+  const scanTrades = useMemo(() => Object.values(scanTradesMap), [scanTradesMap]);
   // Distinguishes "still computing" from "genuinely produced zero trades" -
   // both look identical as an empty pineResults array otherwise, and a full
   // run can take a minute or more (longer if it's queued behind another
@@ -284,8 +298,11 @@ export function TradesPanel() {
     () => [
       { key: BACKEND_SOURCE, label: `Backend (${ws.symbol} 1h)` },
       ...pineGroups.map((g) => ({ key: pineJournalSourceKey(g.indicator.id), label: g.indicator.name })),
+      // Only shown once a scan has actually produced a trade - a user who
+      // never opens the Strategy tab sees no change here at all.
+      ...(scanTrades.length > 0 ? [{ key: STRATEGY_SOURCE, label: "Strategy Scan" }] : []),
     ],
-    [ws.symbol, pineGroups]
+    [ws.symbol, pineGroups, scanTrades.length]
   );
   useEffect(() => {
     if (!sourceTabs.some((t) => t.key === selectedSource)) setSelectedSource(BACKEND_SOURCE);
@@ -296,10 +313,12 @@ export function TradesPanel() {
     setExpanded(null);
   }
 
-  const fromPine = selectedSource !== BACKEND_SOURCE;
+  const fromScan = selectedSource === STRATEGY_SOURCE;
+  const fromPine = selectedSource !== BACKEND_SOURCE && !fromScan;
   const selectedPineGroup = fromPine ? pineGroups.find((g) => pineJournalSourceKey(g.indicator.id) === selectedSource) ?? null : null;
 
   const rows: DisplayRow[] = useMemo(() => {
+    if (fromScan) return [];
     if (!fromPine) {
       return backendTrades.map((t) => {
         const key = tradeKey(ws.symbol, t.entryBar);
@@ -313,7 +332,7 @@ export function TradesPanel() {
       trade: p.trade,
       source: p.source,
     }));
-  }, [fromPine, backendTrades, selectedPineGroup, ws.symbol]);
+  }, [fromScan, fromPine, backendTrades, selectedPineGroup, ws.symbol]);
 
   const canJump = ws.timeframe === "1h";
 
@@ -346,6 +365,7 @@ export function TradesPanel() {
           best-effort match against this script's own BOS/CHoCH/FVG labels, not a guarantee.
         </div>
       )}
+      {!fromScan && (
       <table className="panel-table">
         <thead>
           <tr>
@@ -448,6 +468,113 @@ export function TradesPanel() {
           )}
         </tbody>
       </table>
+      )}
+      {fromScan && (
+        <>
+          {(() => {
+            const statsInput = scanTradesToStatsInput(scanTrades);
+            const stats = computeLiveStats(statsInput, 1);
+            const totalRR = scanTrades.reduce((sum, t) => sum + t.r, 0);
+            return (
+              <div className="panel-summary mono">
+                <div>
+                  <span className="panel-dim">Total Trades</span>
+                  <span>{stats.total}</span>
+                </div>
+                <div>
+                  <span className="panel-dim">Total Wins</span>
+                  <span>{stats.wins}</span>
+                </div>
+                <div>
+                  <span className="panel-dim">Win Rate</span>
+                  <span>{stats.winRate.toFixed(1)}%</span>
+                </div>
+                <div>
+                  <span className="panel-dim">Total RR</span>
+                  <span className={totalRR >= 0 ? "pos" : "neg"}>
+                    {totalRR >= 0 ? "+" : ""}
+                    {totalRR.toFixed(2)}R
+                  </span>
+                </div>
+                <div>
+                  <span className="panel-dim">Expected Value</span>
+                  <span className={stats.expectancy >= 0 ? "pos" : "neg"}>
+                    {stats.expectancy >= 0 ? "+" : ""}
+                    {stats.expectancy.toFixed(2)}R
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
+          <table className="panel-table">
+            <thead>
+              <tr>
+                <th />
+                <th>#</th>
+                <th>Symbol</th>
+                <th>Direction</th>
+                <th>Result</th>
+                <th>RR</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {scanTrades
+                .slice()
+                .sort((a, b) => a.entryTime - b.entryTime)
+                .map((t, i) => {
+                  const key = scanTradeKey(t.symbol, t.timeframe, t.entryTime, t.exitTime, t.indicatorId);
+                  const isOpen = expanded === key;
+                  const hasEntry = !!entries[key] && (entries[key].note !== "" || entries[key].tags.length > 0 || entries[key].rating > 0);
+                  // No jump-to-replay here (unlike the Backend/Pine table
+                  // above) - a scan trade's symbol/timeframe may not be the
+                  // active chart's own, and this feature is explicitly
+                  // independent of whatever's on screen. Telegram review is
+                  // likewise omitted for this source - out of scope for v1.
+                  return (
+                    <Fragment key={t.id}>
+                      <tr>
+                        <td className="jr-expand-cell">
+                          <button
+                            type="button"
+                            className={`jr-expand-btn${hasEntry ? " has-entry" : ""}`}
+                            title={isOpen ? "Collapse journal" : "Journal this trade"}
+                            onClick={() => setExpanded(isOpen ? null : key)}
+                          >
+                            {isOpen ? "▾" : "▸"}
+                          </button>
+                        </td>
+                        <td className="mono">{i + 1}</td>
+                        <td className="mono">{t.symbol}</td>
+                        <td className={t.dir === "long" ? "pos" : "neg"}>{t.dir === "long" ? "Long" : "Short"}</td>
+                        <td className={t.result === "Win" ? "pos" : "neg"}>{t.result}</td>
+                        <td className={`mono ${t.r >= 0 ? "pos" : "neg"}`}>
+                          {t.r >= 0 ? "+" : ""}
+                          {t.r.toFixed(2)}
+                        </td>
+                        <td className="panel-dim">{new Date(t.entryTime * 1000).toISOString().slice(0, 10)}</td>
+                      </tr>
+                      {isOpen && (
+                        <tr className="jr-row">
+                          <td colSpan={7}>
+                            <JournalEditor tradeKey={key} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              {scanTrades.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="panel-empty">
+                    No trades
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </>
+      )}
     </div>
   );
 }

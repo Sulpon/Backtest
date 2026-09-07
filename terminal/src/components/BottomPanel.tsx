@@ -1,17 +1,23 @@
 import { useState } from "react";
 import { TradesPanel } from "./panels/TradesPanel";
 import { StatsPanel } from "./panels/StatsPanel";
+import { StrategyPanel } from "./panels/StrategyPanel";
+import { DetailedAnalysisPanel } from "./panels/DetailedAnalysisPanel";
 import "./BottomPanel.css";
 
-type BottomTab = "trades" | "stats";
+type BottomTab = "trades" | "stats" | "strategy" | "detailed";
 
-// Only 2 tabs, not 4 - TradesPanel already IS the combined Trades+Journal
-// view (expand a row to star/tag/note it - see that file) and StatsPanel
-// already IS the combined Performance+Statistics view. Labeling them as 4
-// separate tabs would imply 4 distinct panels that don't exist.
+// TradesPanel already IS the combined Trades+Journal view (expand a row to
+// star/tag/note it - see that file) and StatsPanel already IS the combined
+// Performance+Statistics view - so this stays 4 tabs, not more, even though
+// "Strategy"/"Detailed Analysis" each add their own dedicated view:
+// labeling any of these as further separate tabs would imply distinct
+// panels that don't exist.
 const TABS: { id: BottomTab; label: string }[] = [
   { id: "trades", label: "Trades & Journal" },
   { id: "stats", label: "Performance" },
+  { id: "strategy", label: "Strategy" },
+  { id: "detailed", label: "Detailed Analysis" },
 ];
 
 /**
@@ -62,6 +68,8 @@ export function BottomPanel() {
         <div className="bottom-panel-body">
           {activeTab === "trades" && <TradesPanel />}
           {activeTab === "stats" && <StatsPanel />}
+          {activeTab === "strategy" && <StrategyPanel />}
+          {activeTab === "detailed" && <DetailedAnalysisPanel />}
         </div>
       )}
     </div>

@@ -141,7 +141,12 @@ export function cacheKey(ind: PineIndicator, bars: CandleBar[]): string {
   return `${ind.id}:${hashCode(ind.code)}:${JSON.stringify(ind.inputOverrides)}:${ind.startDate ?? ""}:${datasetVersion(bars)}`;
 }
 
-function getOrComputeResult(
+/** Exported for reuse by the Strategy tab's historical scanner
+ * (strategy/historicalScanner.ts), which calls this directly in a loop
+ * across many symbols - same startDate-slicing / IndexedDB-cache /
+ * shared-worker-dispatch path the live chart itself uses, just invoked
+ * outside the usePineIndicators hook rather than duplicated. */
+export function getOrComputeResult(
   ind: PineIndicator,
   bars: CandleBar[],
   symbol: string | null,

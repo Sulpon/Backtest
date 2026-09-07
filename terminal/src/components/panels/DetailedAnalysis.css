@@ -1,0 +1,238 @@
+.da-panel {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.da-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px 18px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.da-date-input {
+  max-width: 140px;
+}
+
+.da-pos {
+  color: var(--ok);
+}
+
+.da-neg {
+  color: var(--danger);
+}
+
+.da-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.da-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.da-widget-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Cumulative RR chart */
+
+.da-range-buttons {
+  display: flex;
+  gap: 2px;
+}
+
+.da-range-btn {
+  height: 22px;
+  padding: 0 9px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.da-range-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.da-range-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.da-chart-wrap {
+  position: relative;
+}
+
+.da-chart-container {
+  width: 100%;
+  height: 260px;
+}
+
+.da-chart-empty-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Year/month nav */
+
+.da-year-nav,
+.da-month-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.da-nav-btn {
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.da-nav-btn:hover {
+  background: var(--bg-hover);
+}
+
+.da-year-label,
+.da-month-label {
+  font-size: 12px;
+  min-width: 90px;
+  text-align: center;
+}
+
+.da-today-btn {
+  height: 22px;
+  padding: 0 9px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.da-today-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* Shared grid cell (Monthly cards + Daily calendar days) */
+
+.da-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  min-height: 52px;
+}
+
+.da-cell.pos {
+  background: var(--ok-soft);
+  border-color: transparent;
+}
+
+.da-cell.neg {
+  background: var(--danger-soft);
+  border-color: transparent;
+}
+
+.da-cell.neutral {
+  color: var(--text-faint);
+}
+
+.da-cell-blank {
+  background: transparent;
+  border-color: transparent;
+}
+
+.da-cell-label,
+.da-cell-date {
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.da-cell-rr {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.da-cell.pos .da-cell-rr {
+  color: var(--ok);
+}
+
+.da-cell.neg .da-cell-rr {
+  color: var(--danger);
+}
+
+.da-cell-count {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/* Monthly Performance */
+
+.da-month-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.da-period-total {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+}
+
+/* Daily Performance calendar */
+
+.da-day-grid-header {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}
+
+.da-day-label {
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.da-day-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}

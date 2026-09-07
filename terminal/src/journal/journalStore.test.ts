@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { tradeKey, useJournalStore } from "./journalStore";
+import { scanTradeKey, tradeKey, useJournalStore } from "./journalStore";
 
 describe("tradeKey", () => {
   it("matches today's plain format when no indicatorId is given (backend trades - zero behavior change)", () => {
@@ -20,6 +20,45 @@ describe("tradeKey", () => {
 
   it("is stable for the same symbol/entryBar/indicatorId combination", () => {
     expect(tradeKey("EURUSD", 42, "pi-1")).toBe(tradeKey("EURUSD", 42, "pi-1"));
+  });
+});
+
+describe("scanTradeKey", () => {
+  it("is stable for the same symbol/timeframe/entryTime/exitTime/indicatorId combination", () => {
+    expect(scanTradeKey("EURUSD", "1h", 1_700_000_000, 1_700_003_600, "pi-1")).toBe(
+      scanTradeKey("EURUSD", "1h", 1_700_000_000, 1_700_003_600, "pi-1")
+    );
+  });
+
+  it("never collides with tradeKey's backend or bar-indexed Pine shapes, even reusing the same numeric value", () => {
+    // A scan trade's entryTime (~1.7 billion) and a live-chart trade's
+    // entryBar (a small bar-index int) are different units, but nothing
+    // stops them sharing the same digits in a test - the key FORMAT itself
+    // (the literal "scan" segment) is what must keep these apart, not luck.
+    const n = 1_700_000_000;
+    const backend = tradeKey("EURUSD", n);
+    const pine = tradeKey("EURUSD", n, "pi-1");
+    const scan = scanTradeKey("EURUSD", "1h", n, n + 3600, "pi-1");
+    expect(scan).not.toBe(backend);
+    expect(scan).not.toBe(pine);
+  });
+
+  it("gives two different timeframes of the same symbol/indicator/entryTime/exitTime independent keys", () => {
+    const oneHour = scanTradeKey("EURUSD", "1h", 1_700_000_000, 1_700_003_600, "pi-1");
+    const fourHour = scanTradeKey("EURUSD", "4h", 1_700_000_000, 1_700_003_600, "pi-1");
+    expect(oneHour).not.toBe(fourHour);
+  });
+
+  it("gives two different indicators sharing symbol/timeframe/entryTime/exitTime independent keys", () => {
+    const a = scanTradeKey("EURUSD", "1h", 1_700_000_000, 1_700_003_600, "pi-a");
+    const b = scanTradeKey("EURUSD", "1h", 1_700_000_000, 1_700_003_600, "pi-b");
+    expect(a).not.toBe(b);
+  });
+
+  it("regression: two trades sharing the same entryTime but different exitTime get independent keys (the bug found during live validation - a same-bar-exit trade and a separately-running trade opening on the same bar were colliding and one was silently dropped)", () => {
+    const sameBarExit = scanTradeKey("EURUSD", "1h", 1_736_758_800, 1_736_758_800, "pi-1");
+    const laterExit = scanTradeKey("EURUSD", "1h", 1_736_758_800, 1_736_946_000, "pi-1");
+    expect(sameBarExit).not.toBe(laterExit);
   });
 });
 

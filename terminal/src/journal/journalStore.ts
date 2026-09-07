@@ -47,6 +47,24 @@ export function tradeKey(symbol: string, entryBar: number, indicatorId?: string)
   return indicatorId ? `${symbol}:pine:${indicatorId}:${entryBar}` : `${symbol}:${entryBar}`;
 }
 
+/** Journal key for a Strategy-scan trade (strategy/historicalScanner.ts) -
+ * a sibling to tradeKey above, not an overload of it: a scan trade's
+ * ScanTradeRecord.entryTime is an absolute unix timestamp (~1.7 billion),
+ * never a small bar-index int like tradeKey's `entryBar` param, so reusing
+ * tradeKey's own signature for it would silently give that parameter a
+ * third, differently-typed meaning tradeKey's own doc comment doesn't
+ * describe. The literal "scan" segment plus timeframe keeps this format
+ * visually unambiguous from both of tradeKey's existing shapes and safe
+ * even if a symbol is scanned at more than one timeframe. Takes exitTime
+ * too, matching ScanTradeRecord.id's own shape (see that type's doc
+ * comment): a single bar can open more than one distinct trade, so
+ * entryTime alone isn't a unique key - without exitTime here, two such
+ * trades would incorrectly share one journal note/rating even though
+ * they're now correctly stored and displayed as separate rows. */
+export function scanTradeKey(symbol: string, timeframe: string, entryTime: number, exitTime: number, indicatorId: string): string {
+  return `${symbol}:${timeframe}:pine:${indicatorId}:scan:${entryTime}:${exitTime}`;
+}
+
 function patch(entries: Record<string, JournalEntry>, key: string, changes: Partial<JournalEntry>): Record<string, JournalEntry> {
   const current = entries[key] ?? EMPTY_ENTRY;
   return { ...entries, [key]: { ...current, ...changes } };
