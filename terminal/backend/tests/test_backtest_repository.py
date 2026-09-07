@@ -154,7 +154,7 @@ def test_store_run_then_get_run_round_trips_every_field(temp_runtime_db):
     assert got["timeframe"] == "1h"
     assert got["strategy"] == "smc_fib_ote"
     assert got["rr_ratio"] == 2.45
-    assert got["csv_path"].endswith("EURUSD60 (1).csv")
+    assert got["csv_path"].endswith("EURUSD_H1.csv")
     assert got["config"] == {"rrRatio": 2.45}
     assert got["validation"] == VALIDATION_OK
     assert got["trades"] == TRADES

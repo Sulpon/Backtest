@@ -6,9 +6,11 @@ is verifying the windowing/re-indexing math against real, full-size
 symbol/timeframe combos (100k+ bars, tens of thousands of events), which a
 small synthetic fixture wouldn't exercise the same way.
 """
+import duckdb
 import pytest
 from fastapi.testclient import TestClient
 
+from app import db as app_db
 from app.main import app
 
 
@@ -21,12 +23,30 @@ def test_omitting_limit_returns_the_full_unwindowed_dataset(client):
     """Regression guard: the new parameter must be fully opt-in. Every
     existing caller (TradesPanel, the background full-fetch - see
     DataLayer.ts) that never passes `limit` must see byte-for-byte the
-    same shape as before this parameter existed."""
+    same shape as before this parameter existed.
+
+    Asserts against the TRUE current row count (queried fresh from
+    data.duckdb, read-only), not a hardcoded snapshot - EURUSD/1h had
+    exactly 100,000 bars when this test was first written, but the
+    ongoing Dukascopy ingestion pipeline (data_ingestion/) legitimately
+    grows this count over time; a frozen number here would make this test
+    fail on every future data update, exactly the "test_build_db_py_has_
+    zero_diff" staleness problem this repo already hit and fixed once
+    before. The real invariant being verified is "omitting limit returns
+    the FULL dataset, not a truncated one" - which is what a dynamic count
+    actually proves, unlike a frozen constant."""
+    con = duckdb.connect(app_db.DB_PATH, read_only=True)
+    try:
+        expected_count = con.execute(
+            "SELECT COUNT(*) FROM candles WHERE symbol = 'EURUSD' AND timeframe = '1h'"
+        ).fetchone()[0]
+    finally:
+        con.close()
+
     res = client.get("/api/dataset", params={"symbol": "EURUSD", "timeframe": "1h"})
     assert res.status_code == 200
     data = res.json()
-    # Known from the performance audit: EURUSD/1h has exactly 100,000 bars.
-    assert len(data["bars"]) == 100_000
+    assert len(data["bars"]) == expected_count
 
 
 def test_limit_returns_exactly_that_many_bars(client):

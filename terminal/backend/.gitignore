@@ -4,6 +4,16 @@ __pycache__/
 .env
 .pytest_cache/
 
+# Raw .bi5 tick-file cache (data_ingestion/cache.py) - regenerable by
+# re-running the downloader; large and not project source.
+data_ingestion/.cache/
+
+# Timestamped pre-write backups (data_ingestion/orchestrator.py's
+# --backup, default on) and the copy-testing artifact used to verify the
+# ingestion pipeline before it ever touches the real data.duckdb.
+*.duckdb.bak-*
+data.duckdb.poc-test-copy
+
 # data.duckdb is intentionally tracked (via Git LFS - see .gitattributes at
 # the repo root and terminal/README.md#deploying-to-vercel), not ignored -
 # the deployed Vercel backend reads it directly, read-only, at the same
