@@ -99,6 +99,15 @@ describe("MarketDataSocket", () => {
     expect(latestSocket().url).toBe("wss://api.test/ws/market-data");
   });
 
+  it("regression: an empty apiBase (Vercel production's real same-origin config, e.g. VITE_API_BASE=\"\") resolves against the page's own origin instead of throwing - this crashed the entire app on production before the fix, since the module-level marketDataSocket singleton constructs this URL eagerly at import time, before React ever mounts", () => {
+    expect(() => new MarketDataSocket("", newFakeSocketClass())).not.toThrow();
+    const socket = new MarketDataSocket("", newFakeSocketClass());
+    socket.subscribeSymbol("EURUSD");
+    const url = latestSocket().url;
+    expect(url.startsWith("ws://") || url.startsWith("wss://")).toBe(true);
+    expect(url.endsWith("/ws/market-data")).toBe(true);
+  });
+
   it("a second subscribe for the same symbol does not resend subscribe (refcount dedup)", () => {
     const socket = new MarketDataSocket("http://api.test", newFakeSocketClass());
     socket.subscribeSymbol("EURUSD");

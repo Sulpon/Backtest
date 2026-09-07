@@ -62,7 +62,26 @@ const INITIAL_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 
 function wsUrlFromApiBase(apiBase: string): string {
-  const url = new URL(apiBase);
+  // apiBase can be "" (same-origin/relative - Vercel production's actual
+  // configuration, where the frontend and backend share one origin) or a
+  // full absolute URL (local dev's http://localhost:8000 default, from
+  // DataLayer.ts's API_BASE). Every other caller of API_BASE (DataLayer.ts,
+  // telegramApi.ts) just string-concatenates it in front of a path, which
+  // tolerates "" fine for fetch(); `new URL(apiBase)` alone does not - it
+  // throws on a relative/empty string, which is exactly what crashed the
+  // whole app on production before this fix (the module-level
+  // `marketDataSocket` singleton below constructs this URL eagerly at
+  // import time). The two-argument form resolves a relative/empty first
+  // argument against the second (base) - exactly how fetch() already
+  // resolves DataLayer.ts's own relative request URLs against the current
+  // page - and simply ignores the base when apiBase is already absolute.
+  // `typeof window !== "undefined"` guards the same way pine.worker.ts's
+  // own `typeof self !== "undefined"` does - this module's top-level
+  // `marketDataSocket` singleton below constructs this URL eagerly at
+  // import time, and this project's Vitest tests run in a plain Node
+  // environment (no `window` global at all), not jsdom.
+  const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+  const url = new URL(apiBase || "/", origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = "/ws/market-data";
   url.search = "";
