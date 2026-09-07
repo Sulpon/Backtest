@@ -143,7 +143,7 @@ describe("buildLossStreakMatrix", () => {
   it("produces the correct dimensions and percentage-scaled values", () => {
     const matrix = buildLossStreakMatrix({ winRatesPct: DEFAULT_LOSS_STREAK_WIN_RATES, sequenceLength: 1000, streakLengths: DEFAULT_LOSS_STREAK_LENGTHS });
     expect(matrix.probabilities.length).toBe(19);
-    expect(matrix.probabilities[0].length).toBe(10);
+    expect(matrix.probabilities[0].length).toBe(20);
     for (const row of matrix.probabilities) {
       for (const cell of row) {
         expect(cell).toBeGreaterThanOrEqual(0);

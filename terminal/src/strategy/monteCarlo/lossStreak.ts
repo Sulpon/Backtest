@@ -97,7 +97,12 @@ export function probabilityOfLossStreak(winRatePct: number, sequenceLength: numb
 
   let noRun = 0;
   for (let k = 0; k < x; k++) noRun += dp[k];
-  return 1 - noRun;
+  // Clamp to [0,1]: repeated floating-point summation over `sequenceLength`
+  // iterations can drift by a machine-epsilon amount (e.g. -6.66e-14
+  // instead of exactly 0), most visible at larger streak lengths - a
+  // mathematically valid probability is never outside this range, so this
+  // is a rounding-error clamp, not a change to the underlying formula.
+  return Math.min(1, Math.max(0, 1 - noRun));
 }
 
 /** Builds the full Losing Streak Probability matrix - one
@@ -120,7 +125,7 @@ export function buildLossStreakMatrix(config: LossStreakMatrixConfig): LossStrea
 
 /** Default rows: 5%, 10%, ..., 95%. */
 export const DEFAULT_LOSS_STREAK_WIN_RATES = Array.from({ length: 19 }, (_, i) => (i + 1) * 5);
-/** Default columns: 1 through 10. */
-export const DEFAULT_LOSS_STREAK_LENGTHS = Array.from({ length: 10 }, (_, i) => i + 1);
+/** Default columns: 1 through 20. */
+export const DEFAULT_LOSS_STREAK_LENGTHS = Array.from({ length: 20 }, (_, i) => i + 1);
 export const DEFAULT_LOSS_STREAK_SEQUENCE_LENGTH = 1000;
 export const LOSS_STREAK_SEQUENCE_LENGTH_PRESETS = [100, 250, 500, 1000, 5000];
