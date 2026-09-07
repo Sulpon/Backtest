@@ -6,6 +6,8 @@ import { randomSeed } from "../../strategy/monteCarlo/rng";
 import type { CustomOutcome, OutcomeSource, SimulationRunConfig } from "../../strategy/monteCarlo/types";
 import { strategyLabInterpretation } from "../../strategy/monteCarlo/interpretation";
 import { MonteCarloResultsView } from "./MonteCarloResultsView";
+import { SensitivityMatrix } from "./SensitivityMatrix";
+import { LossStreakMatrix } from "./LossStreakMatrix";
 import "./panels.css";
 import "./StrategyPanel.css";
 import "./MonteCarlo.css";
@@ -232,6 +234,10 @@ export function MonteCarloStrategyLabMode() {
       </div>
 
       <MonteCarloResultsView run={run} interpretationLines={interpretationLines} idleHint="Set your hypothetical Win Rate / RR parameters above, then press Run Simulation." />
+
+      <div className="da-widget-title mc-sensitivity-heading">Monte Carlo Sensitivity</div>
+      <SensitivityMatrix />
+      <LossStreakMatrix />
     </div>
   );
 }

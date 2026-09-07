@@ -1,7 +1,9 @@
 import { runMonteCarlo } from "./engine";
 import { runChallengeMonteCarlo } from "./challengeEngine";
+import { runSensitivityMatrix } from "./sensitivityEngine";
 import type { MonteCarloRawResult, SimulationRunConfig } from "./types";
 import type { ChallengeRawResult, ChallengeRunConfig } from "./challengeTypes";
+import type { SensitivityMatrixResult, SensitivityRunConfig } from "./sensitivityTypes";
 
 /**
  * A SEPARATE, isolated Web Worker from pine/pine.worker.ts - per the spec's
@@ -13,19 +15,19 @@ import type { ChallengeRawResult, ChallengeRunConfig } from "./challengeTypes";
  * for its own 100k-bar interpreter runs, just a fully independent worker
  * instance/module so the two can never contend for the same thread.
  *
- * Extended (not replaced) for the Challenge Simulator: the SAME worker now
- * also dispatches "challenge" requests to challengeEngine.ts's
- * runChallengeMonteCarlo - per spec's "Reuse the existing Monte Carlo
- * Worker... Do NOT create another worker", rather than spinning up a
- * second worker for the Challenge Simulator. `kind` discriminates which
- * engine a request/response belongs to; the generic "generic" path is
- * otherwise byte-for-byte the same runMonteCarlo() call as before this
- * extension.
+ * Extended twice since first written - once for the Challenge Simulator,
+ * once for the Risk x RR Sensitivity Matrix - always by adding a new
+ * `kind` to the SAME worker/discriminated union, never a second worker
+ * (both spec's explicit "Do NOT create another worker"). `kind` picks which
+ * engine a request/response belongs to; the "generic" path is otherwise
+ * byte-for-byte the same runMonteCarlo() call as the original,
+ * pre-extension version.
  */
 
 export type MonteCarloWorkerRequest =
   | { requestId: number; kind: "generic"; config: SimulationRunConfig }
-  | { requestId: number; kind: "challenge"; config: ChallengeRunConfig };
+  | { requestId: number; kind: "challenge"; config: ChallengeRunConfig }
+  | { requestId: number; kind: "sensitivity"; config: SensitivityRunConfig };
 
 export interface MonteCarloWorkerProgressMessage {
   type: "progress";
@@ -36,7 +38,8 @@ export interface MonteCarloWorkerProgressMessage {
 
 export type MonteCarloWorkerDoneMessage =
   | { type: "done"; requestId: number; kind: "generic"; result: MonteCarloRawResult }
-  | { type: "done"; requestId: number; kind: "challenge"; result: ChallengeRawResult };
+  | { type: "done"; requestId: number; kind: "challenge"; result: ChallengeRawResult }
+  | { type: "done"; requestId: number; kind: "sensitivity"; result: SensitivityMatrixResult };
 
 export type MonteCarloWorkerMessage = MonteCarloWorkerProgressMessage | MonteCarloWorkerDoneMessage;
 
@@ -53,6 +56,10 @@ export function handleMonteCarloRequest(
   if (req.kind === "challenge") {
     const result = runChallengeMonteCarlo(req.config, { onProgress });
     return { type: "done", requestId: req.requestId, kind: "challenge", result };
+  }
+  if (req.kind === "sensitivity") {
+    const result = runSensitivityMatrix(req.config, { onProgress });
+    return { type: "done", requestId: req.requestId, kind: "sensitivity", result };
   }
   const result = runMonteCarlo(req.config, { onProgress });
   return { type: "done", requestId: req.requestId, kind: "generic", result };

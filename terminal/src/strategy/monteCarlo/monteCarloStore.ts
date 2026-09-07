@@ -1,7 +1,10 @@
 import { create } from "zustand";
-import { runChallengeMonteCarloOnWorker, runMonteCarloOnWorker } from "./monteCarloClient";
+import { runChallengeMonteCarloOnWorker, runMonteCarloOnWorker, runSensitivityMatrixOnWorker } from "./monteCarloClient";
 import type { CustomOutcome, MonteCarloMode, MonteCarloRawResult, OutcomeModel, SimulationRunConfig } from "./types";
 import type { ChallengeRawResult, ChallengeRunConfig, ChallengeType, DrawdownType } from "./challengeTypes";
+import type { SensitivityMatrixResult, SensitivityRunConfig } from "./sensitivityTypes";
+import { DEFAULT_SENSITIVITY_RISK_LEVELS_PCT, DEFAULT_SENSITIVITY_RR_RATIOS } from "./sensitivityTypes";
+import { DEFAULT_LOSS_STREAK_SEQUENCE_LENGTH } from "./lossStreak";
 
 /**
  * Monte Carlo's own UI/run state - deliberately NOT persisted (unlike
@@ -119,6 +122,28 @@ export interface ChallengeModeRunState {
 
 const IDLE_CHALLENGE_RUN_STATE: ChallengeModeRunState = { status: "idle", progress: null, result: null, error: null, sourceLabel: "" };
 
+/** Risk x RR Sensitivity Matrix's own axes config - independent of, but
+ * defaults matching, sensitivityTypes.ts's suggested defaults. Everything
+ * ELSE the matrix needs (Win Rate, Trades/Simulation, Simulations,
+ * Starting Balance, Seed) is read directly from `labParams` at run time by
+ * the UI component - never duplicated into a second copy of those fields
+ * here (see sensitivityEngine.ts's own doc comment on why only Win Rate is
+ * actually reused, and MonteCarloSensitivityMatrix.tsx for where the rest
+ * are read from). */
+export interface SensitivityAxesConfig {
+  riskLevelsPct: number[];
+  rewardRiskRatios: number[];
+}
+
+export interface SensitivityModeRunState {
+  status: RunStatus;
+  progress: { completed: number; total: number } | null;
+  result: SensitivityMatrixResult | null;
+  error: string | null;
+}
+
+const IDLE_SENSITIVITY_RUN_STATE: SensitivityModeRunState = { status: "idle", progress: null, result: null, error: null };
+
 interface MonteCarloStoreState {
   mode: MonteCarloMode;
   setMode: (mode: MonteCarloMode) => void;
@@ -141,6 +166,21 @@ interface MonteCarloStoreState {
   setChallengeSimSettings: (patch: Partial<ChallengeSimSettings>) => void;
   challengeRun: ChallengeModeRunState;
 
+  /** Risk x RR Sensitivity Matrix and Losing Streak Probability table -
+   * both live under Strategy Lab (see MonteCarloStrategyLabMode.tsx),
+   * appended after the existing results, never replacing them. */
+  sensitivityAxes: SensitivityAxesConfig;
+  setSensitivityAxes: (patch: Partial<SensitivityAxesConfig>) => void;
+  sensitivityRun: SensitivityModeRunState;
+
+  /** Losing Streak Probability is a pure analytical calculation (see
+   * lossStreak.ts) - no run/progress/worker state needed, only its one
+   * configurable input (sequence length; win-rate-range and streak-range
+   * stay at their spec-defined defaults, per "Suggested controls" only
+   * calling out sequence length as needing a control). */
+  lossStreakSequenceLength: number;
+  setLossStreakSequenceLength: (n: number) => void;
+
   /** The ONLY way a result is ever produced - never automatic (not on
    * mount, not on filter/param change - those instead clear the relevant
    * mode's result back to idle via the setters above, per the spec's
@@ -149,6 +189,7 @@ interface MonteCarloStoreState {
   runMyStrategy: (config: SimulationRunConfig, sourceLabel: string) => Promise<void>;
   runLab: (config: SimulationRunConfig, sourceLabel: string) => Promise<void>;
   runChallenge: (config: ChallengeRunConfig, sourceLabel: string) => Promise<void>;
+  runSensitivity: (config: SensitivityRunConfig) => Promise<void>;
 }
 
 function runOnSlot(
@@ -190,6 +231,24 @@ function runChallengeOnSlot(
     });
 }
 
+function runSensitivityOnSlot(
+  set: (updater: (s: MonteCarloStoreState) => Partial<MonteCarloStoreState>) => void,
+  config: SensitivityRunConfig
+): Promise<void> {
+  const total = config.axes.riskLevelsPct.length * config.axes.rewardRiskRatios.length;
+  set((s) => ({ sensitivityRun: { ...s.sensitivityRun, status: "running", progress: { completed: 0, total }, result: null, error: null } }));
+  return runSensitivityMatrixOnWorker(config, (completed, totalCells) => {
+    set((s) => ({ sensitivityRun: { ...s.sensitivityRun, progress: { completed, total: totalCells } } }));
+  })
+    .then((result) => {
+      set((s) => ({ sensitivityRun: { ...s.sensitivityRun, status: "done", result, progress: null } }));
+    })
+    .catch((e: unknown) => {
+      const message = e instanceof Error ? e.message : String(e);
+      set((s) => ({ sensitivityRun: { ...s.sensitivityRun, status: "error", error: message, progress: null } }));
+    });
+}
+
 export const useMonteCarloStore = create<MonteCarloStoreState>()((set) => ({
   mode: "myStrategy",
   setMode: (mode) => set({ mode }),
@@ -225,6 +284,12 @@ export const useMonteCarloStore = create<MonteCarloStoreState>()((set) => ({
     set((s) => ({
       labParams: { ...s.labParams, ...patch },
       labRun: { ...IDLE_RUN_STATE },
+      // The Sensitivity Matrix reuses labParams' winRatePct/tradesPerSimulation/
+      // numSimulations/seed/startingBalance directly (see sensitivityEngine.ts) -
+      // any of those changing invalidates a previous matrix result, same
+      // "changing inputs must invalidate previous results" convention this
+      // store already applies everywhere else.
+      sensitivityRun: { ...IDLE_SENSITIVITY_RUN_STATE },
     })),
 
   myStrategyRun: { ...IDLE_RUN_STATE },
@@ -265,7 +330,19 @@ export const useMonteCarloStore = create<MonteCarloStoreState>()((set) => ({
 
   challengeRun: { ...IDLE_CHALLENGE_RUN_STATE },
 
+  sensitivityAxes: { riskLevelsPct: [...DEFAULT_SENSITIVITY_RISK_LEVELS_PCT], rewardRiskRatios: [...DEFAULT_SENSITIVITY_RR_RATIOS] },
+  setSensitivityAxes: (patch) =>
+    set((s) => ({
+      sensitivityAxes: { ...s.sensitivityAxes, ...patch },
+      sensitivityRun: { ...IDLE_SENSITIVITY_RUN_STATE },
+    })),
+  sensitivityRun: { ...IDLE_SENSITIVITY_RUN_STATE },
+
+  lossStreakSequenceLength: DEFAULT_LOSS_STREAK_SEQUENCE_LENGTH,
+  setLossStreakSequenceLength: (n) => set({ lossStreakSequenceLength: n }),
+
   runMyStrategy: (config, sourceLabel) => runOnSlot("myStrategyRun", set, config, sourceLabel),
   runLab: (config, sourceLabel) => runOnSlot("labRun", set, config, sourceLabel),
   runChallenge: (config, sourceLabel) => runChallengeOnSlot(set, config, sourceLabel),
+  runSensitivity: (config) => runSensitivityOnSlot(set, config),
 }));

@@ -1,6 +1,7 @@
 import type { MonteCarloWorkerDoneMessage, MonteCarloWorkerMessage, MonteCarloWorkerRequest } from "./monteCarlo.worker";
 import type { MonteCarloRawResult, SimulationRunConfig } from "./types";
 import type { ChallengeRawResult, ChallengeRunConfig } from "./challengeTypes";
+import type { SensitivityMatrixResult, SensitivityRunConfig } from "./sensitivityTypes";
 
 /**
  * Main-thread side of the isolated Monte Carlo worker - mirrors
@@ -9,10 +10,12 @@ import type { ChallengeRawResult, ChallengeRunConfig } from "./challengeTypes";
  * monteCarlo.worker.ts, a completely separate Worker instance/module (see
  * that file's own doc comment on why it must never be pine.worker.ts).
  *
- * Extended (not duplicated) for the Challenge Simulator: the SAME shared
- * worker singleton now also carries "challenge" requests - see
- * runChallengeMonteCarloOnWorker below - rather than a second Worker
- * instance, per spec's "Do NOT create another worker".
+ * Extended (not duplicated) for the Challenge Simulator and, since, the
+ * Risk x RR Sensitivity Matrix: the SAME shared worker singleton carries
+ * "challenge" and "sensitivity" requests too - see
+ * runChallengeMonteCarloOnWorker/runSensitivityMatrixOnWorker below -
+ * rather than a second Worker instance, per spec's "Do NOT create another
+ * worker".
  */
 let sharedWorker: Worker | null = null;
 let nextRequestId = 1;
@@ -70,6 +73,23 @@ export function runChallengeMonteCarloOnWorker(
     pendingDone.set(requestId, (msg) => resolve((msg as Extract<MonteCarloWorkerDoneMessage, { kind: "challenge" }>).result));
     if (onProgress) pendingProgress.set(requestId, onProgress);
     const req: MonteCarloWorkerRequest = { requestId, kind: "challenge", config };
+    getWorker().postMessage(req);
+  });
+}
+
+/** Runs one Risk x RR Sensitivity Matrix job on the SAME isolated worker
+ * (never a second Worker instance, and never one worker launch per cell -
+ * the whole matrix is one request/response round trip), resolving with the
+ * full matrix result once complete. */
+export function runSensitivityMatrixOnWorker(
+  config: SensitivityRunConfig,
+  onProgress?: (completed: number, total: number) => void
+): Promise<SensitivityMatrixResult> {
+  const requestId = nextRequestId++;
+  return new Promise((resolve) => {
+    pendingDone.set(requestId, (msg) => resolve((msg as Extract<MonteCarloWorkerDoneMessage, { kind: "sensitivity" }>).result));
+    if (onProgress) pendingProgress.set(requestId, onProgress);
+    const req: MonteCarloWorkerRequest = { requestId, kind: "sensitivity", config };
     getWorker().postMessage(req);
   });
 }

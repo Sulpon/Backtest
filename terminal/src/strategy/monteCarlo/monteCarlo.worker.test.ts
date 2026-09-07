@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { handleMonteCarloRequest, type MonteCarloWorkerProgressMessage } from "./monteCarlo.worker";
 import type { SimulationRunConfig } from "./types";
 import type { ChallengeConfig, ChallengeRunConfig } from "./challengeTypes";
+import type { SensitivityRunConfig } from "./sensitivityTypes";
 
 /**
  * Regression tests for monteCarlo.worker.ts's handleMonteCarloRequest - the
@@ -66,6 +67,43 @@ describe("handleMonteCarloRequest - generic", () => {
     expect(progress.length).toBeGreaterThan(0);
     for (const p of progress) expect(p.requestId).toBe(7);
     expect(progress[progress.length - 1].completed).toBe(2000);
+  });
+});
+
+function sensitivityConfig(overrides: Partial<SensitivityRunConfig> = {}): SensitivityRunConfig {
+  return {
+    winRatePct: 40,
+    tradesPerSimulation: 10,
+    numSimulations: 20,
+    seed: 1,
+    startingBalance: 1000,
+    axes: { riskLevelsPct: [1, 2], rewardRiskRatios: [1, 2] },
+    ...overrides,
+  };
+}
+
+describe("handleMonteCarloRequest - sensitivity (extended protocol)", () => {
+  it("dispatches to the sensitivity engine and returns kind: 'sensitivity'", () => {
+    const done = handleMonteCarloRequest({ requestId: 55, kind: "sensitivity", config: sensitivityConfig() }, () => {});
+    expect(done.type).toBe("done");
+    expect(done.kind).toBe("sensitivity");
+    expect(done.requestId).toBe(55);
+    if (done.kind === "sensitivity") {
+      expect(done.result.cells.length).toBe(2);
+      expect(done.result.cells[0].length).toBe(2);
+    }
+  });
+
+  it("reports progress for a sensitivity request with the same requestId, completing at total cell count", () => {
+    const progress: MonteCarloWorkerProgressMessage[] = [];
+    handleMonteCarloRequest(
+      { requestId: 21, kind: "sensitivity", config: sensitivityConfig({ axes: { riskLevelsPct: [1, 2, 3], rewardRiskRatios: [1, 2] } }) },
+      (m) => progress.push(m)
+    );
+    expect(progress.length).toBeGreaterThan(0);
+    for (const p of progress) expect(p.requestId).toBe(21);
+    expect(progress[progress.length - 1].completed).toBe(6); // 3 risk levels x 2 RR ratios
+    expect(progress[progress.length - 1].total).toBe(6);
   });
 });
 
