@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.backtest</groupId>
+    <artifactId>dukascopy-bridge</artifactId>
+    <version>0.1.0-poc</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <!-- Dukascopy's own public repository - hosts the official JForex-SDK
+         artifacts. No authentication needed to download/compile against it;
+         a Dukascopy account is only needed at RUNTIME to actually connect. -->
+    <repositories>
+        <repository>
+            <id>dc_public</id>
+            <name>Dukascopy public repository</name>
+            <!-- https, not http - Dukascopy's own Maven tutorial page shows
+                 http://, but that's stale: the real repo redirects http->https
+                 (confirmed via curl), and modern Maven (3.8+) blocks plain-http
+                 repositories outright via its default mirror, so https is
+                 required for this to resolve at all, not just a preference. -->
+            <url>https://www.dukascopy.com/client/jforexlib/publicrepo/</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <!-- The official JForex-SDK client library - per Dukascopy's own
+             Maven tutorial (dukascopy.com/wiki/en/development/get-started-api/
+             development-environment/Maventutorial/), which documents
+             version 2.18 - but that's long stale (repo directory listing
+             confirmed via curl shows 2.18 doesn't exist; 3.6.51, dated
+             2025-10-17, is the latest actually published). Pulls in
+             JForex-API and its transitive deps (SLF4J etc.) automatically. -->
+        <dependency>
+            <groupId>com.dukascopy.dds2</groupId>
+            <artifactId>DDS2-jClient-JForex</artifactId>
+            <version>3.6.51</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>dukascopy-bridge</finalName>
+        <plugins>
+            <!-- Bundles all dependencies into one runnable jar - the
+                 smallest possible way to "start the bridge" (java -jar),
+                 no separate classpath management needed. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.backtest.bridge.Bridge</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
