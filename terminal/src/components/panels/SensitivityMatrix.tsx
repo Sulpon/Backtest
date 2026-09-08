@@ -71,11 +71,21 @@ export function SensitivityMatrix() {
       <div className="da-card-header">
         <span className="da-widget-title">Risk × Reward/Risk Sensitivity</span>
         <div className="mc-legend">
-          <button type="button" className={`da-range-btn${displayMode === "expectedR" ? " active" : ""}`} onClick={() => setDisplayMode("expectedR")}>
-            Expected R
+          <button
+            type="button"
+            className={`da-range-btn${displayMode === "expectedR" ? " active" : ""}`}
+            onClick={() => setDisplayMode("expectedR")}
+            title="Simulated mean of each simulation's summed per-trade R outcomes - the standard R-multiple convention, defined independently of position size. Does not change across a row (Risk %) by design."
+          >
+            Expected R (risk-independent)
           </button>
-          <button type="button" className={`da-range-btn${displayMode === "medianR" ? " active" : ""}`} onClick={() => setDisplayMode("medianR")}>
-            Median Final R
+          <button
+            type="button"
+            className={`da-range-btn${displayMode === "medianR" ? " active" : ""}`}
+            onClick={() => setDisplayMode("medianR")}
+            title="Simulated median of each simulation's summed per-trade R outcomes - same risk-independent R-multiple convention as Expected R."
+          >
+            Median R (risk-independent)
           </button>
         </div>
       </div>
@@ -83,7 +93,8 @@ export function SensitivityMatrix() {
       <p className="panel-dim mc-heatmap-caption">
         Uses the current Strategy Lab settings: Win Rate {labParams.winRatePct}%, Average Loss 1R (by convention - Reward:Risk is measured
         against it), Trades / Simulation {labParams.tradesPerSimulation.toLocaleString()}, Simulations {labParams.numSimulations.toLocaleString()},
-        Seed {labParams.seed}.
+        Seed {labParams.seed}. Risk % changes compounded equity and Probability of Profit below - it does not change the R values shown, which
+        are risk-independent by the standard R-multiple definition (P&L ÷ risk taken on that trade).
       </p>
 
       <div className="strategy-row">
@@ -170,7 +181,7 @@ export function SensitivityMatrix() {
                           className={`mc-heatmap-cell mc-heatmap-cell-clickable${isSelected ? " mc-heatmap-cell-selected" : ""}`}
                           style={{ background: `color-mix(in srgb, var(--ok) ${cell.probabilityOfProfitPct}%, var(--danger))` }}
                           onClick={() => setSelectedCell(cell)}
-                          title={`Risk ${riskPct}%, RR ${cell.rr} - click for details`}
+                          title={`Risk ${riskPct}%, RR ${cell.rr} - Probability of Profit reflects compounding at this risk level; the R value is risk-independent (same for every row in this column). Click for details.`}
                         >
                           <div className="mc-heatmap-cell-primary">{cell.probabilityOfProfitPct.toFixed(1)}%</div>
                           <div className={`mc-heatmap-cell-secondary ${secondary >= 0 ? "pos" : "neg"}`}>{signedR(secondary)}</div>
@@ -213,8 +224,16 @@ export function SensitivityMatrix() {
                   <span className="panel-dim">Probability of Profit</span>
                   <span className="pos">{selectedCell.probabilityOfProfitPct.toFixed(1)}%</span>
                 </div>
+              </div>
+
+              <div className="panel-dim mc-detail-section-label">
+                R-space (risk-independent - the standard R-multiple convention: P&L ÷ risk taken on that trade)
+              </div>
+              <div className="panel-summary mono">
                 <div>
-                  <span className="panel-dim">Expected Final R (simulated mean)</span>
+                  <span className="panel-dim" title="Simulated mean of this cell's summed per-trade R outcomes. Identical for every Risk row in this RR column - it does not change with position size.">
+                    Expected R
+                  </span>
                   <span className={selectedCell.meanFinalR >= 0 ? "pos" : "neg"}>{signedR(selectedCell.meanFinalR, 2)}</span>
                 </div>
                 <div>
@@ -222,12 +241,22 @@ export function SensitivityMatrix() {
                   <span className={theoreticalEv >= 0 ? "pos" : "neg"}>{signedR(theoreticalEv, 2)}</span>
                 </div>
                 <div>
-                  <span className="panel-dim">Median Final R</span>
+                  <span className="panel-dim">Median R</span>
                   <span className={selectedCell.medianFinalR >= 0 ? "pos" : "neg"}>{signedR(selectedCell.medianFinalR, 2)}</span>
                 </div>
                 <div>
                   <span className="panel-dim">Median Max Drawdown</span>
                   <span className="neg">{signedR(selectedCell.medianMaxDrawdownR, 2)}</span>
+                </div>
+              </div>
+
+              <div className="panel-dim mc-detail-section-label">Compounded equity (risk-dependent - changes with the Risk % row)</div>
+              <div className="panel-summary mono">
+                <div>
+                  <span className="panel-dim" title="Simulated mean of (final equity / starting equity) across all simulations in this cell - the same figure used to price Expected Final Equity below. Unlike Expected R, this DOES change per Risk % row.">
+                    Expected Equity Multiplier
+                  </span>
+                  <span className={selectedCell.meanFinalEquityMultiplier >= 1 ? "pos" : "neg"}>{selectedCell.meanFinalEquityMultiplier.toFixed(4)}×</span>
                 </div>
                 {result.startingBalance != null && (
                   <div>

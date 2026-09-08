@@ -249,3 +249,10 @@
   border-top: 1px solid var(--border-strong);
   font-size: 13px;
 }
+
+.mc-detail-section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-top: 6px;
+}
