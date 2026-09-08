@@ -32,7 +32,7 @@ _BID_ASK_COLUMNS = (
 )
 
 _INSERT_COLUMNS = (
-    "symbol", "timeframe", "bar_index", "time", "open", "high", "low", "close", *_BID_ASK_COLUMNS
+    "symbol", "timeframe", "bar_index", "time", "open", "high", "low", "close", "volume", *_BID_ASK_COLUMNS
 )
 _INSERT_SQL = (
     f"INSERT INTO candles ({', '.join(_INSERT_COLUMNS)}) VALUES ({', '.join('?' for _ in _INSERT_COLUMNS)})"
@@ -95,7 +95,7 @@ def upsert_symbol_timeframe(con: duckdb.DuckDBPyConnection, symbol: str, timefra
     if coverage is not None and new_sorted[0].timestamp_utc > coverage[1]:
         next_idx = _next_bar_index(con, symbol, timeframe)
         rows = [
-            (symbol, timeframe, next_idx + i, c.timestamp_utc, c.open, c.high, c.low, c.close, *_candle_bid_ask_tuple(c))
+            (symbol, timeframe, next_idx + i, c.timestamp_utc, c.open, c.high, c.low, c.close, c.volume, *_candle_bid_ask_tuple(c))
             for i, c in enumerate(new_sorted)
         ]
         con.executemany(_INSERT_SQL, rows)
@@ -105,17 +105,26 @@ def upsert_symbol_timeframe(con: duckdb.DuckDBPyConnection, symbol: str, timefra
     # with what's already stored - merge by timestamp (new candles win on
     # an exact-timestamp collision, since Dukascopy bid/ask data is
     # strictly more complete than an older plain-OHLC CSV row for the same
-    # minute), then rebuild the whole (symbol, timeframe) partition with
-    # bar_index fully renumbered 0..N-1 chronologically - the only
-    # approach that stays correct regardless of insertion direction.
+    # minute, and a freshly-computed Dukascopy tick-count is more granular
+    # than an older broker-CSV tick-count for that same minute), then
+    # rebuild the whole (symbol, timeframe) partition with bar_index fully
+    # renumbered 0..N-1 chronologically - the only approach that stays
+    # correct regardless of insertion direction.
+    #
+    # `volume` is carried through both sides of this merge deliberately:
+    # an existing row not touched by `new_sorted` keeps exactly the volume
+    # it already had (selected below, passed through unchanged via
+    # tuple(r[1:])) - it must never silently become NULL just because the
+    # partition happens to get rebuilt. A row that DOES collide with a new
+    # candle gets that candle's own volume, same as its OHLC/bid-ask.
     existing_rows = con.execute(
-        "SELECT time, open, high, low, close, bid_open, bid_high, bid_low, bid_close, "
+        "SELECT time, open, high, low, close, volume, bid_open, bid_high, bid_low, bid_close, "
         "ask_open, ask_high, ask_low, ask_close FROM candles WHERE symbol = ? AND timeframe = ?",
         [symbol, timeframe],
     ).fetchall()
     merged: dict[int, tuple] = {r[0]: tuple(r[1:]) for r in existing_rows}
     for c in new_sorted:
-        merged[c.timestamp_utc] = (c.open, c.high, c.low, c.close, *_candle_bid_ask_tuple(c))
+        merged[c.timestamp_utc] = (c.open, c.high, c.low, c.close, c.volume, *_candle_bid_ask_tuple(c))
     ordered_times = sorted(merged.keys())
     rows = [(symbol, timeframe, i, t, *merged[t]) for i, t in enumerate(ordered_times)]
 

@@ -207,7 +207,7 @@ def run_ingestion(
 
 
 def _candle_from_1m_row(symbol: str, row: tuple) -> Candle:
-    time_, open_, high, low, close, bid_open, bid_high, bid_low, bid_close, ask_open, ask_high, ask_low, ask_close = row
+    time_, open_, high, low, close, volume, bid_open, bid_high, bid_low, bid_close, ask_open, ask_high, ask_low, ask_close = row
     has_bid_ask = bid_open is not None
     return Candle(
         instrument_id=symbol,
@@ -217,8 +217,11 @@ def _candle_from_1m_row(symbol: str, row: tuple) -> Candle:
         high=high,
         low=low,
         close=close,
-        # `candles` has no volume column - there is nothing to read back,
-        # so this stays None (honest "unknown"), never fabricated.
+        # Read back from `candles.volume` as stored - None for an older
+        # row that never had it (e.g. a pre-migration CSV import), never
+        # fabricated. aggregate_candles() already only sums volume when
+        # every member of a bucket has a real (non-None) value.
+        volume=volume,
         bid_open=bid_open,
         bid_high=bid_high,
         bid_low=bid_low,
@@ -259,7 +262,7 @@ def reaggregate_higher_timeframes(
     error - "missing or stale" is determined per-timeframe, independently,
     not as one blanket operation."""
     base_rows = con.execute(
-        "SELECT time, open, high, low, close, bid_open, bid_high, bid_low, bid_close, "
+        "SELECT time, open, high, low, close, volume, bid_open, bid_high, bid_low, bid_close, "
         "ask_open, ask_high, ask_low, ask_close FROM candles WHERE symbol = ? AND timeframe = ? ORDER BY time",
         [symbol, BASE_TIMEFRAME],
     ).fetchall()

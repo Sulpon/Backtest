@@ -134,6 +134,26 @@ def test_unknown_symbol_still_404s_with_limit_set(client):
     assert res.status_code == 404
 
 
+def test_dataset_1h_bars_include_populated_volume(client):
+    """candles.volume is tick-count activity (not centralized traded
+    volume - forex is OTC), already populated for EURUSD/1h by the CSV
+    rebuild - /api/dataset must actually surface it, not just have a
+    column for it."""
+    res = client.get("/api/dataset", params={"symbol": "EURUSD", "timeframe": "1h", "limit": 5})
+    assert res.status_code == 200
+    bars = res.json()["bars"]
+    assert len(bars) == 5
+    assert all("volume" in b and b["volume"] is not None for b in bars)
+
+
+def test_dataset_1d_bars_include_populated_volume(client):
+    res = client.get("/api/dataset", params={"symbol": "EURUSD", "timeframe": "1d", "limit": 5})
+    assert res.status_code == 200
+    bars = res.json()["bars"]
+    assert len(bars) == 5
+    assert all("volume" in b and b["volume"] is not None for b in bars)
+
+
 def test_stats_are_never_windowed(client):
     """Aggregate win-rate/expectancy stats describe the whole backtest, not
     a bar range - must be identical windowed or not."""

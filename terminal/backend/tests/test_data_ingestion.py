@@ -21,6 +21,7 @@ import httpx
 import pytest
 
 from app.marketdata.models import Candle, PriceKind
+from app.marketdata.timeframes import aggregate_candles
 
 from data_ingestion import cache as cache_module
 from data_ingestion.aggregator import aggregate_to_timeframes, ticks_to_1m_candles
@@ -245,13 +246,14 @@ def test_aggregate_to_timeframes_includes_1m_unchanged_and_derives_others():
 def con(tmp_path):
     """A private, from-scratch DuckDB file with only the two tables
     importer.py actually touches - mirrors build_db.py's exact `candles`/
-    `symbols` schema so the migration/insert statements are tested against
-    something structurally real, without needing the full dataset."""
+    `symbols` schema (including `volume`, which the real table has always
+    had - see build_db.py) so the migration/insert statements are tested
+    against something structurally real, without needing the full dataset."""
     db_path = str(tmp_path / "test.duckdb")
     connection = duckdb.connect(db_path)
     connection.execute(
         "CREATE TABLE candles (symbol VARCHAR, timeframe VARCHAR, bar_index INTEGER, "
-        "time BIGINT, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE)"
+        "time BIGINT, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume DOUBLE)"
     )
     connection.execute("CREATE TABLE symbols (symbol VARCHAR PRIMARY KEY, label VARCHAR)")
     yield connection
@@ -415,7 +417,7 @@ def test_run_ingestion_backup_succeeds_before_opening_the_connection(tmp_path):
     setup_con = duckdb.connect(db_path)
     setup_con.execute(
         "CREATE TABLE candles (symbol VARCHAR, timeframe VARCHAR, bar_index INTEGER, "
-        "time BIGINT, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE)"
+        "time BIGINT, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume DOUBLE)"
     )
     setup_con.execute("CREATE TABLE symbols (symbol VARCHAR PRIMARY KEY, label VARCHAR)")
     setup_con.close()
@@ -447,27 +449,29 @@ def test_run_ingestion_backup_succeeds_before_opening_the_connection(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _insert_1m(con, symbol: str, ts: int, price: float, with_bid_ask: bool = True) -> None:
+def _insert_1m(con, symbol: str, ts: int, price: float, with_bid_ask: bool = True, volume: int | None = None) -> None:
     """Directly inserts a bare 1m row, bypassing upsert_symbol_timeframe -
     these tests are about reaggregate_higher_timeframes reading FROM
-    `candles`, not about the insertion path itself (already covered above)."""
+    `candles`, not about the insertion path itself (already covered above).
+    `volume` defaults to None (an older/pre-migration-style row with no
+    volume) - pass it explicitly to test volume propagation."""
     bar_index = con.execute(
         "SELECT COALESCE(MAX(bar_index), -1) + 1 FROM candles WHERE symbol=? AND timeframe='1m'", [symbol]
     ).fetchone()[0]
     if with_bid_ask:
         con.execute(
-            "INSERT INTO candles (symbol, timeframe, bar_index, time, open, high, low, close, "
+            "INSERT INTO candles (symbol, timeframe, bar_index, time, open, high, low, close, volume, "
             "bid_open, bid_high, bid_low, bid_close, ask_open, ask_high, ask_low, ask_close) "
-            "VALUES (?, '1m', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [symbol, bar_index, ts, price, price + 0.0005, price - 0.0005, price,
+            "VALUES (?, '1m', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [symbol, bar_index, ts, price, price + 0.0005, price - 0.0005, price, volume,
              price - 0.0001, price + 0.0004, price - 0.0006, price - 0.0001,
              price + 0.0001, price + 0.0006, price - 0.0004, price + 0.0001],
         )
     else:
         con.execute(
-            "INSERT INTO candles (symbol, timeframe, bar_index, time, open, high, low, close) "
-            "VALUES (?, '1m', ?, ?, ?, ?, ?, ?)",
-            [symbol, bar_index, ts, price, price + 0.0005, price - 0.0005, price],
+            "INSERT INTO candles (symbol, timeframe, bar_index, time, open, high, low, close, volume) "
+            "VALUES (?, '1m', ?, ?, ?, ?, ?, ?, ?)",
+            [symbol, bar_index, ts, price, price + 0.0005, price - 0.0005, price, volume],
         )
 
 
@@ -540,3 +544,226 @@ def test_reaggregate_derives_multiple_timeframes_in_one_call(con):
     written = reaggregate_higher_timeframes(con, "EURUSD", ["5m", "15m", "30m", "1h"])
 
     assert written == {"5m": 24, "15m": 8, "30m": 4, "1h": 2}
+
+
+# ---------------------------------------------------------------------------
+# Volume (tick-count activity): end-to-end correctness for 1h/1d specifically
+# - this task's product scope. The underlying mechanism (aggregate_candles(),
+# upsert_symbol_timeframe()) is timeframe-agnostic by construction (same code
+# path serves every timeframe), so these tests exercise 1h/1d deliberately
+# rather than because the code itself special-cases them.
+#
+# Definition under test throughout: volume = number of Dukascopy ticks
+# contributing to the candle (tick-count activity), never centralized/real
+# traded volume - forex is OTC.
+# ---------------------------------------------------------------------------
+
+
+def _tick(ts: int, ask: float = 1.1005, bid: float = 1.1000) -> RawTick:
+    return RawTick(timestamp_utc=ts, ask=ask, bid=bid, ask_volume=1.0, bid_volume=1.0)
+
+
+def test_synthetic_ticks_aggregate_to_correct_1h_volume():
+    """10 ticks in one minute + 7 ticks in another, both inside the same
+    clock hour - 1h volume must equal the total tick count for that hour
+    (17), via the same ticks_to_1m_candles -> aggregate_to_timeframes path
+    run_ingestion() itself uses, no separate test-only aggregation logic."""
+    hour_start = int(datetime(2026, 8, 24, 10, 0, 0, tzinfo=timezone.utc).timestamp())
+    minute_a = hour_start  # 10:00
+    minute_b = hour_start + 3 * 60  # 10:03, same hour
+    ticks = [_tick(minute_a + i) for i in range(10)] + [_tick(minute_b + i) for i in range(7)]
+
+    base_1m = ticks_to_1m_candles(ticks, "EURUSD")
+    by_tf = aggregate_to_timeframes(base_1m, ["1h"])
+
+    assert len(by_tf["1h"]) == 1
+    assert by_tf["1h"][0].timeframe == "1h"
+    assert by_tf["1h"][0].volume == 17
+
+
+def test_synthetic_1h_candles_aggregate_to_correct_1d_volume():
+    """Four already-aggregated 1h Candle objects (volumes 10/7/5/8, as
+    reaggregate_higher_timeframes would read them back from `candles`) roll
+    up to a 1d volume of 30 via app/marketdata/timeframes.py's existing
+    aggregate_candles() - never a second aggregation implementation."""
+    day_start = int(datetime(2026, 8, 24, 0, 0, 0, tzinfo=timezone.utc).timestamp())
+    hourly_volumes = [10, 7, 5, 8]
+    hour_candles = [
+        Candle(
+            instrument_id="EURUSD", timeframe="1h", timestamp_utc=day_start + i * 3600,
+            open=1.1, high=1.1005, low=1.0995, close=1.1, volume=v,
+            source="dukascopy", price_kind=PriceKind.MID,
+        )
+        for i, v in enumerate(hourly_volumes)
+    ]
+
+    daily = aggregate_candles(hour_candles, "1d")
+
+    assert len(daily) == 1
+    assert daily[0].volume == sum(hourly_volumes) == 30
+
+
+def test_upsert_1h_candle_with_volume_round_trips_through_db(con):
+    ensure_schema_migration(con)
+    ts = int(datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc).timestamp())
+    candle = Candle(
+        instrument_id="EURUSD", timeframe="1h", timestamp_utc=ts,
+        open=1.1, high=1.1010, low=1.0990, close=1.1005, volume=42,
+        bid_open=1.0999, bid_high=1.1009, bid_low=1.0989, bid_close=1.1004,
+        ask_open=1.1001, ask_high=1.1011, ask_low=1.0991, ask_close=1.1006,
+        source="dukascopy", price_kind=PriceKind.BID_ASK,
+    )
+    upsert_symbol_timeframe(con, "EURUSD", "1h", [candle])
+    row = con.execute(
+        "SELECT open, high, low, close, volume FROM candles WHERE symbol='EURUSD' AND timeframe='1h'"
+    ).fetchone()
+    assert row == (1.1, 1.1010, 1.0990, 1.1005, 42)
+
+
+def test_upsert_1d_candle_with_volume_round_trips_through_db(con):
+    ensure_schema_migration(con)
+    ts = int(datetime(2026, 8, 24, 0, 0, tzinfo=timezone.utc).timestamp())
+    candle = Candle(
+        instrument_id="EURUSD", timeframe="1d", timestamp_utc=ts,
+        open=1.1, high=1.102, low=1.098, close=1.101, volume=1234,
+        source="dukascopy", price_kind=PriceKind.MID,
+    )
+    upsert_symbol_timeframe(con, "EURUSD", "1d", [candle])
+    row = con.execute("SELECT volume FROM candles WHERE symbol='EURUSD' AND timeframe='1d'").fetchone()
+    assert row == (1234,)
+
+
+def test_upsert_fast_path_append_preserves_volume(con):
+    ensure_schema_migration(con)
+    base = int(datetime(2026, 8, 24, 8, 0, tzinfo=timezone.utc).timestamp())
+    first = Candle(
+        instrument_id="EURUSD", timeframe="1h", timestamp_utc=base,
+        open=1.1, high=1.101, low=1.099, close=1.1005, volume=10,
+        source="dukascopy", price_kind=PriceKind.MID,
+    )
+    second = Candle(
+        instrument_id="EURUSD", timeframe="1h", timestamp_utc=base + 3600,
+        open=1.1005, high=1.102, low=1.0995, close=1.101, volume=20,
+        source="dukascopy", price_kind=PriceKind.MID,
+    )
+    upsert_symbol_timeframe(con, "EURUSD", "1h", [first])
+    upsert_symbol_timeframe(con, "EURUSD", "1h", [second])  # strictly newer -> fast path
+    rows = con.execute(
+        "SELECT time, volume FROM candles WHERE symbol='EURUSD' AND timeframe='1h' ORDER BY time"
+    ).fetchall()
+    assert rows == [(base, 10), (base + 3600, 20)]
+
+
+def test_overlap_merge_never_wipes_existing_untouched_volume(con):
+    """Regression test for the merge-path bug found during the historical
+    audit: upsert_symbol_timeframe's slow (DELETE+reinsert) path used to
+    omit `volume` from both its SELECT and INSERT, silently turning every
+    existing row's volume into NULL whenever an overlap/backfill write
+    touched that (symbol, timeframe) partition - even rows the new write
+    never intended to touch. Seeds a 1h partition with real (CSV-style, no
+    bid/ask) volume, exactly like the real EURUSD 1h dataset, then runs an
+    overlapping write that only actually collides with ONE of the seeded
+    timestamps."""
+    ensure_schema_migration(con)
+    base = int(datetime(2026, 8, 24, 8, 0, tzinfo=timezone.utc).timestamp())
+    for i, vol in enumerate([100, 200, 300]):  # base, base+1h, base+2h
+        con.execute(
+            "INSERT INTO candles (symbol, timeframe, bar_index, time, open, high, low, close, volume) "
+            "VALUES ('EURUSD', '1h', ?, ?, 1.1, 1.101, 1.099, 1.1005, ?)",
+            [i, base + i * 3600, vol],
+        )
+
+    new_candle_colliding = Candle(  # same timestamp as the middle seeded row
+        instrument_id="EURUSD", timeframe="1h", timestamp_utc=base + 3600,
+        open=1.1, high=1.1015, low=1.0995, close=1.101, volume=999,
+        bid_open=1.0999, bid_high=1.1014, bid_low=1.0994, bid_close=1.1009,
+        ask_open=1.1001, ask_high=1.1016, ask_low=1.0996, ask_close=1.1011,
+        source="dukascopy", price_kind=PriceKind.BID_ASK,
+    )
+    new_candle_extending = Candle(  # one hour past the existing max - genuinely new
+        instrument_id="EURUSD", timeframe="1h", timestamp_utc=base + 3 * 3600,
+        open=1.101, high=1.1020, low=1.1000, close=1.1015, volume=55,
+        bid_open=1.1009, bid_high=1.1019, bid_low=1.0999, bid_close=1.1014,
+        ask_open=1.1011, ask_high=1.1021, ask_low=1.1001, ask_close=1.1016,
+        source="dukascopy", price_kind=PriceKind.BID_ASK,
+    )
+    upsert_symbol_timeframe(con, "EURUSD", "1h", [new_candle_colliding, new_candle_extending])
+
+    rows = con.execute(
+        "SELECT time, volume FROM candles WHERE symbol='EURUSD' AND timeframe='1h' ORDER BY time"
+    ).fetchall()
+    volumes_by_time = dict(rows)
+
+    assert volumes_by_time[base] == 100  # untouched existing row - preserved, not NULL
+    assert volumes_by_time[base + 3600] == 999  # collided - new Dukascopy volume wins
+    assert volumes_by_time[base + 2 * 3600] == 300  # untouched existing row - preserved
+    assert volumes_by_time[base + 3 * 3600] == 55  # brand-new row - has its own volume
+    assert None not in volumes_by_time.values()  # the core invariant this fix guarantees
+
+
+def test_upsert_1h_rerun_is_idempotent_including_volume(con):
+    ensure_schema_migration(con)
+    base = int(datetime(2026, 8, 24, 8, 0, tzinfo=timezone.utc).timestamp())
+    candles = [
+        Candle(
+            instrument_id="EURUSD", timeframe="1h", timestamp_utc=base + i * 3600,
+            open=1.1, high=1.101, low=1.099, close=1.1005, volume=10 + i,
+            bid_open=1.0999, bid_high=1.1009, bid_low=1.0989, bid_close=1.1004,
+            ask_open=1.1001, ask_high=1.1011, ask_low=1.0991, ask_close=1.1006,
+            source="dukascopy", price_kind=PriceKind.BID_ASK,
+        )
+        for i in range(3)
+    ]
+    upsert_symbol_timeframe(con, "EURUSD", "1h", candles)
+    upsert_symbol_timeframe(con, "EURUSD", "1h", candles)  # identical rerun
+
+    rows = con.execute(
+        "SELECT time, open, high, low, close, volume FROM candles WHERE symbol='EURUSD' AND timeframe='1h' ORDER BY time"
+    ).fetchall()
+    assert len(rows) == 3  # no duplicates
+    assert [r[5] for r in rows] == [10, 11, 12]  # volume unchanged, not doubled/re-summed
+    assert [r[1] for r in rows] == [1.1, 1.1, 1.1]  # OHLC unchanged too
+
+
+def test_reaggregate_1h_sums_1m_tick_counts_into_volume(con):
+    ensure_schema_migration(con)
+    base = int(datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc).timestamp())
+    volumes = [10, 7, 5, 8]
+    for i, vol in enumerate(volumes):
+        _insert_1m(con, "EURUSD", base + i * 60, 1.10 + i * 0.0001, volume=vol)
+
+    written = reaggregate_higher_timeframes(con, "EURUSD", ["1h"])
+
+    assert written == {"1h": 1}
+    row = con.execute("SELECT volume FROM candles WHERE symbol='EURUSD' AND timeframe='1h'").fetchone()
+    assert row[0] == sum(volumes) == 30
+
+
+def test_reaggregate_1d_sums_1m_tick_counts_into_volume(con):
+    ensure_schema_migration(con)
+    base = int(datetime(2026, 8, 24, 0, 0, tzinfo=timezone.utc).timestamp())
+    volumes = [3, 4, 5]
+    for i, vol in enumerate(volumes):
+        _insert_1m(con, "EURUSD", base + i * 60, 1.10, volume=vol)
+
+    written = reaggregate_higher_timeframes(con, "EURUSD", ["1d"])
+
+    assert written == {"1d": 1}
+    row = con.execute("SELECT volume FROM candles WHERE symbol='EURUSD' AND timeframe='1d'").fetchone()
+    assert row[0] == sum(volumes) == 12
+
+
+def test_reaggregate_1h_volume_is_none_when_any_member_1m_row_has_no_volume(con):
+    """Matches aggregate_candles()'s own documented rule: summing a real
+    count together with a genuinely-missing one and calling the result real
+    would be fabrication - a partial-volume hour must stay None, never
+    silently treated as zero or partially summed."""
+    ensure_schema_migration(con)
+    base = int(datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc).timestamp())
+    _insert_1m(con, "EURUSD", base, 1.10, volume=10)
+    _insert_1m(con, "EURUSD", base + 60, 1.1001, volume=None)  # older row, no volume
+
+    reaggregate_higher_timeframes(con, "EURUSD", ["1h"])
+
+    row = con.execute("SELECT volume FROM candles WHERE symbol='EURUSD' AND timeframe='1h'").fetchone()
+    assert row[0] is None
