@@ -178,6 +178,11 @@ export interface InputDef {
   options?: string[];
   minval?: number;
   maxval?: number;
+  /** The script's own declared step (e.g. `input.float(0.71, ..., step=0.01)`) -
+   * already parsed by callInput's resolveArgs call below for every input()
+   * kind, just not previously copied into InputDef. undefined when the
+   * script's input() call omits step. */
+  step?: number;
   group?: string;
 }
 
@@ -814,6 +819,7 @@ export class Interpreter {
       options: isPineArray(resolved.options) ? (resolved.options.items as string[]) : undefined,
       minval: typeof resolved.minval === "number" ? resolved.minval : undefined,
       maxval: typeof resolved.maxval === "number" ? resolved.maxval : undefined,
+      step: typeof resolved.step === "number" ? resolved.step : undefined,
       group: typeof resolved.group === "string" ? resolved.group : undefined,
     });
     return value;

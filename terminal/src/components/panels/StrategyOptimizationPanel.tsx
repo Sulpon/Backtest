@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useSymbols } from "../../data/useSymbols";
 import { TIMEFRAMES, TIMEFRAME_LABELS } from "../../data/timeframes";
 import type { Timeframe } from "../../data/types";
@@ -6,7 +6,7 @@ import { dataLayer } from "../../data/DataLayer";
 import { usePineIndicatorStore } from "../../pine/pineIndicatorStore";
 import { useOptimizationStore } from "../../strategy/optimization/store";
 import type { CandidateMonteCarloState } from "../../strategy/optimization/store";
-import { MAX_COMBINATIONS } from "../../strategy/optimization/parameterSpace";
+import { MAX_COMBINATIONS, safeCountCombinations, selectParameterDefs, validateParameterDef } from "../../strategy/optimization/parameterSpace";
 import type { CandidateResult, OptimizationObjective, WalkForwardSummary } from "../../strategy/optimization/types";
 import "./panels.css";
 import "./StrategyPanel.css";
@@ -56,6 +56,8 @@ export function StrategyOptimizationPanel() {
   const parameterDefs = useOptimizationStore((s) => s.parameterDefs);
   const updateParameterDef = useOptimizationStore((s) => s.updateParameterDef);
   const discoverParameters = useOptimizationStore((s) => s.discoverParameters);
+  const selectedParameterKeys = useOptimizationStore((s) => s.selectedParameterKeys);
+  const toggleParameterSelected = useOptimizationStore((s) => s.toggleParameterSelected);
   const trainTestSplit = useOptimizationStore((s) => s.trainTestSplit);
   const setTrainTestSplit = useOptimizationStore((s) => s.setTrainTestSplit);
   const minSampleSize = useOptimizationStore((s) => s.minSampleSize);
@@ -110,7 +112,21 @@ export function StrategyOptimizationPanel() {
     await runOptimization(selectedIndicator, targetSymbols);
   }
 
-  const canRun = !running && !!selectedIndicator && targetSymbols.length > 0;
+  const selectedDefs = useMemo(() => selectParameterDefs(parameterDefs, selectedParameterKeys), [parameterDefs, selectedParameterKeys]);
+  const selectedCount = selectedDefs.length;
+  const needsSelection = parameterDefs.length > 0 && selectedCount === 0;
+  const liveCombinations = useMemo(() => safeCountCombinations(selectedDefs), [selectedDefs]);
+  const validationByKey = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const def of selectedDefs) {
+      const issues = validateParameterDef(def);
+      if (issues.length > 0) map.set(def.key, issues);
+    }
+    return map;
+  }, [selectedDefs]);
+  const hasRangeErrors = [...validationByKey.values()].some((issues) => issues.some((i) => !i.includes("outside the Min/Max")));
+
+  const canRun = !running && !!selectedIndicator && targetSymbols.length > 0 && !needsSelection && !hasRangeErrors;
 
   const result = run.result;
   const selectedCandidate = useMemo(
@@ -190,10 +206,15 @@ export function StrategyOptimizationPanel() {
 
       {parameterDefs.length > 0 && (
         <div>
-          <div className="da-widget-title">Parameters to Search</div>
+          <div className="da-widget-title">Optimizable Parameters</div>
+          <p className="panel-dim mc-heatmap-caption">
+            Every numeric input the script declares is discovered automatically - check the ones you want to search. Unchecked parameters stay fixed at
+            their current value and are not part of the grid.
+          </p>
           <table className="opt-param-table">
             <thead>
               <tr>
+                <th></th>
                 <th>Name</th>
                 <th>Current</th>
                 <th>Min</th>
@@ -202,41 +223,72 @@ export function StrategyOptimizationPanel() {
               </tr>
             </thead>
             <tbody>
-              {parameterDefs.map((def) => (
-                <tr key={def.key}>
-                  <td>{def.label}</td>
-                  <td>{def.current}</td>
-                  <td>
-                    <input
-                      type="number"
-                      className="strategy-input opt-param-input"
-                      value={def.min}
-                      onChange={(e) => updateParameterDef(def.key, { min: Number(e.target.value) })}
-                      disabled={running}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      className="strategy-input opt-param-input"
-                      value={def.max}
-                      onChange={(e) => updateParameterDef(def.key, { max: Number(e.target.value) })}
-                      disabled={running}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      className="strategy-input opt-param-input"
-                      value={def.step}
-                      onChange={(e) => updateParameterDef(def.key, { step: Number(e.target.value) })}
-                      disabled={running}
-                    />
-                  </td>
-                </tr>
-              ))}
+              {parameterDefs.map((def) => {
+                const isSelected = !!selectedParameterKeys[def.key];
+                const issues = validationByKey.get(def.key) ?? [];
+                return (
+                  <Fragment key={def.key}>
+                    <tr className={isSelected ? "opt-param-row-selected" : undefined}>
+                      <td>
+                        <input type="checkbox" checked={isSelected} onChange={() => toggleParameterSelected(def.key)} disabled={running} />
+                      </td>
+                      <td>{def.label}</td>
+                      <td>{def.current}</td>
+                      <td>
+                        <input
+                          type="number"
+                          className="strategy-input opt-param-input"
+                          value={def.min}
+                          onChange={(e) => updateParameterDef(def.key, { min: Number(e.target.value) })}
+                          disabled={running || !isSelected}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          className="strategy-input opt-param-input"
+                          value={def.max}
+                          onChange={(e) => updateParameterDef(def.key, { max: Number(e.target.value) })}
+                          disabled={running || !isSelected}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          className="strategy-input opt-param-input"
+                          value={def.step}
+                          onChange={(e) => updateParameterDef(def.key, { step: Number(e.target.value) })}
+                          disabled={running || !isSelected}
+                        />
+                      </td>
+                    </tr>
+                    {isSelected && issues.length > 0 && (
+                      <tr>
+                        <td></td>
+                        <td colSpan={5} className="opt-param-issue">
+                          {issues.join(" ")}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
+
+          {needsSelection && <div className="opt-blocked">Select at least one parameter to optimize.</div>}
+          {!needsSelection && selectedCount > 0 && (
+            <div className="panel-summary mono">
+              <div>
+                <span className="panel-dim">Selected Parameters</span>
+                <span>{selectedCount}</span>
+              </div>
+              <div>
+                <span className="panel-dim">Combinations</span>
+                <span>{liveCombinations == null ? "—" : liveCombinations.toLocaleString("en-US")}</span>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

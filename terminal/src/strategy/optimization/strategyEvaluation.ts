@@ -27,6 +27,11 @@ import type { ParameterCombination, ParameterDef } from "./types";
  * silently guessing a wide range the user never configured could produce
  * a huge, surprising grid. The user must explicitly widen a range in the
  * UI before it searches anything beyond the current value.
+ *
+ * step defaults to the script's own declared `step=` (e.g. Ara.pine's
+ * `fiboEntryLevel` declares step=0.01) when present; only falls back to a
+ * generic 1 (int) / 0.1 (float) guess when the script's own input() call
+ * omitted step entirely.
  */
 export function discoverParameterDefs(indicator: PineIndicator, bars: CandleBar[]): ParameterDef[] {
   const result = runPineScript(indicator, bars);
@@ -36,7 +41,7 @@ export function discoverParameterDefs(indicator: PineIndicator, bars: CandleBar[
       const current = Number(indicator.inputOverrides[d.key] ?? d.defaultValue);
       const min = d.minval ?? current;
       const max = d.maxval ?? current;
-      const step = d.kind === "int" ? 1 : 0.1;
+      const step = d.step ?? (d.kind === "int" ? 1 : 0.1);
       return { key: d.key, label: d.title || d.key, current, min, max, step };
     });
 }

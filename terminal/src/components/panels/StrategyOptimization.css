@@ -91,3 +91,14 @@
   color: var(--text-faint);
   font-style: italic;
 }
+
+.opt-param-row-selected {
+  background: var(--accent-soft);
+}
+
+.opt-param-issue {
+  color: var(--danger);
+  font-size: 10.5px;
+  padding-top: 0 !important;
+  padding-bottom: 4px !important;
+}

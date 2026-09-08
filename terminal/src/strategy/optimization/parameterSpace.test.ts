@@ -6,6 +6,9 @@ import {
   countCombinations,
   generateCombinations,
   gridNeighbors,
+  safeCountCombinations,
+  selectParameterDefs,
+  validateParameterDef,
   valuesForParameter,
 } from "./parameterSpace";
 import type { ParameterDef } from "./types";
@@ -154,5 +157,113 @@ describe("gridNeighbors", () => {
     const center = combos.find((c) => c.values.len === 20 && c.values.mult === 2)!;
     const neighbors = gridNeighbors(center, combos, defs);
     expect(neighbors.map((n) => n.values.mult).sort()).toEqual([1, 3]);
+  });
+});
+
+describe("selectParameterDefs", () => {
+  it("keeps only defs whose key is truthy in `selected`", () => {
+    const defs = [def("a", 1, 1, 1, 1), def("b", 2, 2, 2, 1), def("c", 3, 3, 3, 1)];
+    expect(selectParameterDefs(defs, { a: true, b: false, c: true }).map((d) => d.key)).toEqual(["a", "c"]);
+  });
+
+  it("a key missing from `selected` is treated as not selected", () => {
+    const defs = [def("a", 1, 1, 1, 1)];
+    expect(selectParameterDefs(defs, {})).toEqual([]);
+  });
+
+  it("empty defs -> empty result regardless of `selected`", () => {
+    expect(selectParameterDefs([], { a: true })).toEqual([]);
+  });
+});
+
+describe("safeCountCombinations", () => {
+  it("matches countCombinations for a valid grid", () => {
+    const defs = [def("a", 1, 1, 100, 1), def("b", 1, 1, 100, 1)];
+    expect(safeCountCombinations(defs)).toBe(countCombinations(defs));
+  });
+
+  it("returns null (never throws) for an invalid interim def (min > max)", () => {
+    const defs = [def("a", 1, 10, 1, 1)];
+    expect(safeCountCombinations(defs)).toBeNull();
+  });
+
+  it("returns null for a non-positive step", () => {
+    const defs = [def("a", 1, 1, 10, 0)];
+    expect(safeCountCombinations(defs)).toBeNull();
+  });
+
+  it("returns 1 for an empty def list (just the baseline)", () => {
+    expect(safeCountCombinations([])).toBe(1);
+  });
+});
+
+describe("validateParameterDef", () => {
+  it("a well-formed def has no issues", () => {
+    expect(validateParameterDef(def("fiboEntryLevel", 0.71, 0.6, 0.8, 0.01))).toEqual([]);
+  });
+
+  it("flags min > max", () => {
+    expect(validateParameterDef(def("a", 5, 10, 1, 1))).toContain("Min must be less than or equal to Max.");
+  });
+
+  it("flags a non-positive step", () => {
+    expect(validateParameterDef(def("a", 5, 1, 10, 0))).toContain("Step must be greater than 0.");
+    expect(validateParameterDef(def("a", 5, 1, 10, -1))).toContain("Step must be greater than 0.");
+  });
+
+  it("flags Current outside [Min, Max] as a soft/informational issue", () => {
+    expect(validateParameterDef(def("a", 99, 1, 10, 1))).toContain("Current value is outside the Min/Max range.");
+  });
+
+  it("flags non-finite values and stops there (no further relational checks)", () => {
+    const issues = validateParameterDef({ key: "a", label: "a", current: NaN, min: 1, max: 10, step: 1 });
+    expect(issues).toEqual(["Min, Max, Step, and Current must all be finite numbers."]);
+  });
+
+  it("a value exactly at Min or Max is not flagged as out of range", () => {
+    expect(validateParameterDef(def("a", 1, 1, 10, 1))).toEqual([]);
+    expect(validateParameterDef(def("a", 10, 1, 10, 1))).toEqual([]);
+  });
+});
+
+describe("Fibonacci Entry Level scenario (fiboEntryLevel, per the Ara.pine audit)", () => {
+  it("Min=0.60, Max=0.80, Step=0.01 produces exactly 21 combinations", () => {
+    const fibo = def("fiboEntryLevel", 0.71, 0.6, 0.8, 0.01);
+    expect(countCombinations([fibo])).toBe(21);
+    const grid = buildParameterGrid([fibo]);
+    expect(grid.blocked).toBe(false);
+    expect(grid.combinations.length).toBe(21);
+  });
+
+  it("the current 0.71 baseline is included in the generated grid even though it's off-step from 0.60", () => {
+    const fibo = def("fiboEntryLevel", 0.71, 0.6, 0.8, 0.01);
+    const grid = buildParameterGrid([fibo]);
+    const baseline = grid.combinations.find((c) => c.isBaseline);
+    expect(baseline).toBeDefined();
+    expect(baseline!.values.fiboEntryLevel).toBeCloseTo(0.71, 10);
+  });
+
+  it("every generated combination's values map is exactly what would be spread into inputOverrides", () => {
+    // Range deliberately excludes the 0.71 current value, so it should be
+    // force-appended as a 4th point per valuesForParameter's own baseline
+    // guarantee (see that function's doc comment) - confirmed separately
+    // below, not asserted away here.
+    const fibo = def("fiboEntryLevel", 0.71, 0.6, 0.62, 0.01);
+    const grid = buildParameterGrid([fibo]);
+    // Mirrors strategyEvaluation.ts's runScanForCombination: inputOverrides = { ...indicator.inputOverrides, ...combo.values }
+    const overridesSeen: Record<string, unknown>[] = grid.combinations.map((c) => ({ someExistingOverride: true, ...c.values }));
+    for (const overrides of overridesSeen) {
+      expect(overrides).toHaveProperty("fiboEntryLevel");
+      expect(typeof overrides.fiboEntryLevel).toBe("number");
+    }
+    expect(grid.combinations.map((c) => c.values.fiboEntryLevel).sort((a, b) => a - b)).toEqual([0.6, 0.61, 0.62, 0.71]);
+  });
+
+  it("only the selected parameter reaches the grid when other discovered (cosmetic) parameters are left unchecked", () => {
+    const fibo = def("fiboEntryLevel", 0.71, 0.6, 0.8, 0.01);
+    const bosWidth = def("bosLineWidth", 1, 1, 5, 1); // a discovered but unselected cosmetic parameter
+    const selected = selectParameterDefs([fibo, bosWidth], { fiboEntryLevel: true, bosLineWidth: false });
+    expect(selected).toEqual([fibo]);
+    expect(countCombinations(selected)).toBe(21);
   });
 });

@@ -3,7 +3,7 @@ import type { CandleBar, Timeframe } from "../../data/types";
 import type { PineIndicator } from "../../pine/pineIndicatorStore";
 import type { ScanTradeRecord } from "../types";
 import { discoverParameterDefs, generateTradesForGrid } from "./strategyEvaluation";
-import { buildParameterGrid } from "./parameterSpace";
+import { buildParameterGrid, selectParameterDefs } from "./parameterSpace";
 import { splitTrainTest } from "./trainTestSplit";
 import { runOptimizationOnWorker } from "./client";
 import { runCandidateMonteCarlo } from "./monteCarloIntegration";
@@ -54,6 +54,17 @@ interface OptimizationStoreState {
   setParameterDefs: (defs: ParameterDef[]) => void;
   updateParameterDef: (key: string, patch: Partial<ParameterDef>) => void;
   discoverParameters: (indicator: PineIndicator, bars: CandleBar[]) => void;
+
+  /** Which discovered parameters actually participate in the grid - a
+   * discovered indicator can expose many numeric inputs (display/cosmetic
+   * settings alongside real strategy parameters, e.g. Ara.pine's "BOS
+   * Width" or "Number of FVG to show" alongside "Fibonacci Entry Level"),
+   * so nothing is swept by default - the user opts individual parameters
+   * in. Reset to empty only on a fresh discoverParameters call (a
+   * different indicator has an entirely different key set); editing an
+   * already-selected parameter's Min/Max/Step never clears its selection. */
+  selectedParameterKeys: Record<string, boolean>;
+  toggleParameterSelected: (key: string) => void;
 
   symbolMode: "all" | "custom";
   customSymbols: string[];
@@ -121,8 +132,15 @@ export const useOptimizationStore = create<OptimizationStoreState>()((set, get) 
     })),
   discoverParameters: (indicator, bars) => {
     const defs = discoverParameterDefs(indicator, bars);
-    set({ parameterDefs: defs, ...invalidateRun() });
+    set({ parameterDefs: defs, selectedParameterKeys: {}, ...invalidateRun() });
   },
+
+  selectedParameterKeys: {},
+  toggleParameterSelected: (key) =>
+    set((s) => ({
+      selectedParameterKeys: { ...s.selectedParameterKeys, [key]: !s.selectedParameterKeys[key] },
+      ...invalidateRun(),
+    })),
 
   symbolMode: "all",
   customSymbols: [],
@@ -156,9 +174,15 @@ export const useOptimizationStore = create<OptimizationStoreState>()((set, get) 
 
   runOptimization: async (indicator, symbols) => {
     cancelRequested = false;
-    const { parameterDefs, timeframe, startDate, trainTestSplit, minSampleSize, walkForwardFolds, objective } = get();
+    const { parameterDefs, selectedParameterKeys, timeframe, startDate, trainTestSplit, minSampleSize, walkForwardFolds, objective } = get();
 
-    const grid = buildParameterGrid(parameterDefs);
+    const selectedDefs = selectParameterDefs(parameterDefs, selectedParameterKeys);
+    if (parameterDefs.length > 0 && selectedDefs.length === 0) {
+      set({ run: { ...IDLE_RUN_STATE, status: "blocked", blockedMessage: "Select at least one parameter to optimize." } });
+      return;
+    }
+
+    const grid = buildParameterGrid(selectedDefs);
     if (grid.blocked) {
       set({ run: { ...IDLE_RUN_STATE, status: "blocked", blockedMessage: grid.blockedMessage } });
       return;
@@ -196,7 +220,7 @@ export const useOptimizationStore = create<OptimizationStoreState>()((set, get) 
 
       const result = await runOptimizationOnWorker({
         combos: grid.combinations,
-        defs: parameterDefs,
+        defs: selectedDefs,
         tradesByCombo,
         range,
         trainTestSplit,

@@ -143,6 +143,33 @@ plot(len)
     expect(out.inputDefs[0]).toMatchObject({ key: "len", kind: "int", defaultValue: 20 });
   });
 
+  it("captures the script's own declared step= for both input.float and input.int (previously parsed but discarded)", () => {
+    const out = run(
+      `//@version=5
+indicator("t")
+lvl = input.float(0.71, "Fibonacci Entry Level", minval=0.01, maxval=0.99, step=0.01)
+count = input.int(10, "Count", minval=1, maxval=100, step=5)
+plot(lvl)
+plot(count)
+`,
+      1
+    );
+    expect(out.inputDefs[0]).toMatchObject({ key: "lvl", kind: "float", defaultValue: 0.71, minval: 0.01, maxval: 0.99, step: 0.01 });
+    expect(out.inputDefs[1]).toMatchObject({ key: "count", kind: "int", defaultValue: 10, minval: 1, maxval: 100, step: 5 });
+  });
+
+  it("step is undefined (not a fabricated default) when the script's own input() call omits it", () => {
+    const out = run(
+      `//@version=5
+indicator("t")
+len = input.int(20, "Length")
+plot(len)
+`,
+      1
+    );
+    expect(out.inputDefs[0].step).toBeUndefined();
+  });
+
   it("an input override is honored identically to before (input() caching doesn't bypass overrides)", () => {
     const out = run(
       `//@version=5

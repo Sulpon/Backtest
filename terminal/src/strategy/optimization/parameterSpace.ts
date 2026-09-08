@@ -75,6 +75,54 @@ export function countCombinations(defs: ParameterDef[]): number {
   return defs.reduce((acc, d) => acc * valuesForParameter(d).length, 1);
 }
 
+/** countCombinations, but never throws - a live "Combinations: N" UI
+ * preview needs to tolerate an interim invalid state (e.g. the user is
+ * mid-edit and Min currently exceeds Max) without crashing the render.
+ * Returns null for exactly that case; the UI shows a dash/placeholder
+ * instead of a number. */
+export function safeCountCombinations(defs: ParameterDef[]): number | null {
+  try {
+    return countCombinations(defs);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which discovered parameters actually participate in the grid - a
+ * discovered indicator can expose many numeric inputs (display/cosmetic
+ * settings alongside genuine strategy parameters), and the user selects a
+ * subset via checkboxes (see StrategyOptimizationPanel.tsx) rather than
+ * every discovered input being swept by default. `selected` is keyed by
+ * ParameterDef.key; a missing/false entry means "not selected".
+ */
+export function selectParameterDefs(defs: ParameterDef[], selected: Record<string, boolean>): ParameterDef[] {
+  return defs.filter((d) => selected[d.key]);
+}
+
+/**
+ * Per-row range validation, purely informational (never mutates or
+ * blocks buildParameterGrid on its own - see this function's own callers
+ * for how each issue is surfaced/enforced). Checks exactly the four
+ * relations the UI needs to flag inline: all four fields finite, Min <=
+ * Max, Step > 0, and Current within [Min, Max] (the last is a soft
+ * warning, not a hard error - valuesForParameter already guarantees the
+ * Current value is always included as a search point even when it sits
+ * outside the configured Min/Max, so an out-of-range Current is confusing
+ * but not unsafe).
+ */
+export function validateParameterDef(def: ParameterDef): string[] {
+  const issues: string[] = [];
+  if (![def.min, def.max, def.step, def.current].every(Number.isFinite)) {
+    issues.push("Min, Max, Step, and Current must all be finite numbers.");
+    return issues;
+  }
+  if (def.min > def.max) issues.push("Min must be less than or equal to Max.");
+  if (def.step <= 0) issues.push("Step must be greater than 0.");
+  if (def.current < def.min || def.current > def.max) issues.push("Current value is outside the Min/Max range.");
+  return issues;
+}
+
 /** Deterministic, order-independent identity for a parameter combination -
  * sorted by key so `{b:2,a:1}` and `{a:1,b:2}` produce the same string.
  * Used for caching, the stability-heatmap's neighbor lookups, and
