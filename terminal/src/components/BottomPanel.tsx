@@ -4,9 +4,10 @@ import { StatsPanel } from "./panels/StatsPanel";
 import { StrategyPanel } from "./panels/StrategyPanel";
 import { DetailedAnalysisPanel } from "./panels/DetailedAnalysisPanel";
 import { MonteCarloPanel } from "./panels/MonteCarloPanel";
+import { StrategyOptimizationPanel } from "./panels/StrategyOptimizationPanel";
 import "./BottomPanel.css";
 
-type BottomTab = "trades" | "stats" | "strategy" | "detailed" | "montecarlo";
+type BottomTab = "trades" | "stats" | "strategy" | "detailed" | "montecarlo" | "optimization";
 
 // TradesPanel already IS the combined Trades+Journal view (expand a row to
 // star/tag/note it - see that file) and StatsPanel already IS the combined
@@ -20,6 +21,7 @@ const TABS: { id: BottomTab; label: string }[] = [
   { id: "strategy", label: "Strategy" },
   { id: "detailed", label: "Detailed Analysis" },
   { id: "montecarlo", label: "Monte Carlo" },
+  { id: "optimization", label: "Optimization" },
 ];
 
 const STORAGE_KEY = "terminal.bottomPanelHeight";
@@ -158,6 +160,7 @@ export function BottomPanel() {
             {activeTab === "strategy" && <StrategyPanel />}
             {activeTab === "detailed" && <DetailedAnalysisPanel />}
             {activeTab === "montecarlo" && <MonteCarloPanel />}
+            {activeTab === "optimization" && <StrategyOptimizationPanel />}
           </div>
         </>
       )}

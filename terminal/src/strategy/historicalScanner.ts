@@ -1,8 +1,52 @@
 import { dataLayer } from "../data/DataLayer";
 import type { PineIndicator } from "../pine/pineIndicatorStore";
-import { getOrComputeResult } from "../pine/usePineIndicators";
+import { getOrComputeResult, type PineRunResult } from "../pine/usePineIndicators";
 import { useStrategyScanStore } from "./strategyScanStore";
 import type { ScanConfig, ScanTradeRecord } from "./types";
+
+/**
+ * Converts one symbol's Pine run result into ScanTradeRecord[] - extracted
+ * from runHistoricalScan's own per-symbol loop (behavior-preserving, see
+ * historicalScanner.test.ts, unchanged by this extraction) so the
+ * Strategy Optimization module's strategyEvaluation.ts can reuse the exact
+ * same conversion for its own per-parameter-combination runs, rather than
+ * a second, drifting reimplementation. This remains the ONLY place a
+ * PineTradeRecord's bar indices are converted to absolute timestamps.
+ */
+export function pineResultToScanRecords(
+  result: PineRunResult,
+  indicatorId: string,
+  symbol: string,
+  timeframe: ScanConfig["timeframe"],
+  strategyId: string
+): ScanTradeRecord[] {
+  return result.outputs.trades.map((t) => {
+    // entryBar/exitBar index THIS run's own windowedBars - convert to
+    // absolute unix seconds immediately, before this record ever leaves
+    // this per-symbol scope (see ScanTradeRecord's doc comment).
+    const entryTime = result.windowedBars[t.entryBar]?.time ?? 0;
+    const exitTime = result.windowedBars[t.exitBar]?.time ?? entryTime;
+    return {
+      // Includes exitTime, not just entryTime - see ScanTradeRecord's doc
+      // comment (types.ts): a single bar can open more than one distinct
+      // trade, and an entryTime-only id silently collapsed them.
+      id: `${indicatorId}:${symbol}:${timeframe}:${entryTime}:${exitTime}`,
+      strategyId,
+      indicatorId,
+      symbol,
+      timeframe,
+      dir: t.dir,
+      entryTime,
+      entryPrice: t.entryPrice,
+      sl: t.sl,
+      tp: t.tp,
+      exitTime,
+      result: t.result,
+      r: t.r,
+      setup: t.setup,
+    };
+  });
+}
 
 /**
  * Runs `indicator`'s own trade-generation logic (backtest.recordTrade(),
@@ -52,33 +96,7 @@ export async function runHistoricalScan(config: ScanConfig, indicator: PineIndic
         continue;
       }
 
-      const records: ScanTradeRecord[] = result.outputs.trades.map((t) => {
-        // entryBar/exitBar index THIS run's own windowedBars - convert to
-        // absolute unix seconds immediately, before this record ever
-        // leaves this per-symbol scope (see ScanTradeRecord's doc comment).
-        const entryTime = result.windowedBars[t.entryBar]?.time ?? 0;
-        const exitTime = result.windowedBars[t.exitBar]?.time ?? entryTime;
-        return {
-          // Includes exitTime, not just entryTime - see ScanTradeRecord's
-          // doc comment (types.ts): a single bar can open more than one
-          // distinct trade, and an entryTime-only id silently collapsed
-          // them (confirmed: 107 real trades -> 90 stored before this fix).
-          id: `${indicator.id}:${symbol}:${config.timeframe}:${entryTime}:${exitTime}`,
-          strategyId,
-          indicatorId: indicator.id,
-          symbol,
-          timeframe: config.timeframe,
-          dir: t.dir,
-          entryTime,
-          entryPrice: t.entryPrice,
-          sl: t.sl,
-          tp: t.tp,
-          exitTime,
-          result: t.result,
-          r: t.r,
-          setup: t.setup,
-        };
-      });
+      const records: ScanTradeRecord[] = pineResultToScanRecords(result, indicator.id, symbol, config.timeframe, strategyId);
 
       useStrategyScanStore.getState().mergeTrades(records);
       useStrategyScanStore.getState().updateProgress(symbol, { status: "done", tradeCount: records.length });
