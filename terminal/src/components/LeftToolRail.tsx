@@ -1,21 +1,9 @@
 import { useState } from "react";
-import { TOOL_GROUPS, TOOL_SHORTCUTS, TOOL_DESCRIPTIONS, type ToolDef } from "./toolDefinitions";
+import { TOOL_GROUPS, TOOL_SHORTCUTS, TOOL_DESCRIPTIONS, type ToolDef, type ToolGroup } from "./toolDefinitions";
 import { useUiStore } from "../workspace/uiStore";
 import { useToolShortcuts } from "./useToolShortcuts";
+import { DrawingIcon } from "./drawingIcons";
 import "./LeftToolRail.css";
-
-const GROUP_GLYPH: Record<string, string> = {
-  navigation: "◆",
-  lines: "╱",
-  channels: "⫽",
-  fibonacci: "𝑓",
-  shapes: "▭",
-  annotations: "T",
-  risk: "R",
-  measurement: "↔",
-  brushes: "✎",
-  marketstructure: "M",
-};
 
 export const PLACEMENT_HINTS: Record<string, string> = {
   hline: "Click a price to place the horizontal line",
@@ -51,6 +39,28 @@ export function pickTool(tool: ToolDef, setActiveTool: (id: string, hint?: strin
   useUiStore.getState().setStatusHint(`${tool.label} isn't built yet - it's marked "Soon" in the tool list`);
 }
 
+/** Pure selection logic behind a group's own rail-button click: prefers
+ * whichever tool in the group is currently active, then the last live tool
+ * explicitly picked from that group, then falls back to the group's first
+ * live tool. Exported (and kept side-effect free, no store/DOM access) so
+ * it's unit-testable without rendering the rail. */
+export function selectDefaultTool(
+  group: ToolGroup,
+  activeToolId: string | null,
+  lastToolByGroup: Record<string, string>,
+): ToolDef | undefined {
+  return (
+    group.tools.find((tl) => tl.id === activeToolId) ??
+    // `&& tl.live` here is defensive, not load-bearing under normal use: the
+    // only caller (this file's `choose()`) already never records a non-live
+    // id into lastToolByGroup. Kept so this function's own contract - "never
+    // arms a tool the rail shows as 'Soon'" - holds even if a future caller
+    // populates lastToolByGroup some other way.
+    group.tools.find((tl) => tl.id === lastToolByGroup[group.id] && tl.live) ??
+    group.tools.find((tl) => tl.live)
+  );
+}
+
 function tooltipFor(tool: ToolDef): string {
   const parts = [tool.label];
   if (TOOL_SHORTCUTS[tool.id]) parts.push(TOOL_SHORTCUTS[tool.id]);
@@ -76,10 +86,7 @@ export function LeftToolRail() {
   function renderGroup(group: (typeof TOOL_GROUPS)[number]) {
     const isActiveGroup = group.tools.some((tl) => tl.id === activeToolId);
     const single = group.tools.length === 1;
-    const defaultTool =
-      group.tools.find((tl) => tl.id === activeToolId) ??
-      group.tools.find((tl) => tl.id === lastToolByGroup[group.id]) ??
-      group.tools.find((tl) => tl.live);
+    const defaultTool = selectDefaultTool(group, activeToolId, lastToolByGroup);
 
     function choose(tool: ToolDef) {
       pickTool(tool, setActiveTool);
@@ -101,7 +108,7 @@ export function LeftToolRail() {
             setOpenGroup((g) => (g === group.id ? null : group.id));
           }}
         >
-          <span className="rail-glyph">{GROUP_GLYPH[group.id] ?? "•"}</span>
+          <DrawingIcon name={group.id} />
           {!single && <span className="rail-caret">›</span>}
         </button>
 
@@ -119,7 +126,13 @@ export function LeftToolRail() {
                   if (tool.live) setOpenGroup(null); // a reserved pick shows a hint, not a placement - keep the flyout open
                 }}
               >
-                {tool.label}
+                <span className="rail-flyout-main">
+                  <DrawingIcon name={tool.id} size={15} />
+                  <span className="rail-flyout-label">{tool.label}</span>
+                </span>
+                {tool.live && TOOL_SHORTCUTS[tool.id] && (
+                  <span className="rail-flyout-shortcut">{TOOL_SHORTCUTS[tool.id]}</span>
+                )}
                 {!tool.live && <span className="reserved-badge">Soon</span>}
               </button>
             ))}
@@ -149,7 +162,7 @@ export function LeftToolRail() {
         }
         onClick={toggleMagnet}
       >
-        <span className="rail-glyph">🧲</span>
+        <DrawingIcon name="magnet" />
       </button>
       <button
         type="button"
@@ -161,14 +174,14 @@ export function LeftToolRail() {
         }
         onClick={toggleToolLock}
       >
-        <span className="rail-glyph">📌</span>
+        <DrawingIcon name="pin" />
       </button>
       <div className="rail-divider" />
       {restGroups.map(renderGroup)}
 
       <div className="rail-spacer" />
       <button type="button" className="rail-btn" title="Analysis (SMC lives here, not in the drawing rail)" disabled>
-        <span className="rail-glyph">Ω</span>
+        <DrawingIcon name="analysis" />
       </button>
     </div>
   );

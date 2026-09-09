@@ -29,6 +29,14 @@
   border-radius: var(--radius-sm);
 }
 
+/* Icons inherit color from the button (currentColor), so hover/active/
+   disabled all keep working unchanged - see .rail-btn:hover/.active/
+   :disabled below, none of which needed to change for the SVG swap. */
+.drawing-icon {
+  flex: 0 0 auto;
+  display: block;
+}
+
 .rail-btn:hover {
   background: var(--bg-hover);
   color: var(--text);
@@ -111,6 +119,27 @@
 
 .rail-flyout-item.reserved:hover {
   background: transparent;
+}
+
+.rail-flyout-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rail-flyout-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-flyout-shortcut {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
 }
 
 .reserved-badge {
