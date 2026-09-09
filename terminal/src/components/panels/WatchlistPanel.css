@@ -1,0 +1,112 @@
+/* Watchlist's own styles - deliberately NOT sharing panels.css's
+   .panel-table/.panel-scroll/.panel-empty classes. panels.css is shared by
+   every other bottom-dock panel (Trades & Journal, Performance, Strategy,
+   Journal notes) - restyling it here would change every one of those too.
+   This file is imported only by WatchlistPanel.tsx. */
+
+.wl-scroll {
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg-panel);
+}
+
+.wl-section-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-panel-2);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-align: left;
+}
+
+.wl-section-header:hover {
+  color: var(--text-dim);
+}
+
+.wl-section-caret {
+  display: inline-block;
+  font-size: 9px;
+  transition: transform 0.1s ease;
+}
+
+.wl-section-caret.collapsed {
+  transform: rotate(-90deg);
+}
+
+.wl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 10px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.wl-row:hover {
+  background: var(--bg-hover);
+}
+
+.wl-row.active {
+  background: var(--accent-soft);
+}
+
+.wl-row-symbol {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wl-row-prices {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.wl-row-last {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.wl-row-change {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  min-width: 52px;
+  text-align: right;
+}
+
+.wl-row-change.pos {
+  color: var(--ok);
+}
+
+.wl-row-change.neg {
+  color: var(--danger);
+}
+
+.wl-empty {
+  padding: 14px 10px;
+  color: var(--text-faint);
+  text-align: center;
+  font-size: 11.5px;
+}

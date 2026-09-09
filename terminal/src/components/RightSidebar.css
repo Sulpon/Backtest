@@ -15,9 +15,11 @@
   padding: var(--space-2) 0;
 }
 
-/* .rail-btn / .rail-glyph reused as-is from LeftToolRail.css - already
-   loaded globally (LeftToolRail always mounts in AppShell) and already
-   exactly the compact icon-button look this sidebar needs. */
+/* .rail-btn reused as-is from LeftToolRail.css - already loaded globally
+   (LeftToolRail always mounts in AppShell) and already exactly the compact
+   icon-button look this sidebar needs. Icons themselves are <ToolbarIcon>
+   (toolbarIcons.tsx), which already inherits currentColor like .rail-btn's
+   own icon children, so no extra CSS is needed for them here. */
 
 .right-sidebar-panel {
   width: var(--sidebar-w);

@@ -6,6 +6,7 @@ import { dataLayer } from "../data/DataLayer";
 import { WatchlistPanel } from "./panels/WatchlistPanel";
 import { DrawingObjectTree } from "../drawing/DrawingObjectTree";
 import { paneKey } from "../drawing/drawingStore";
+import { ToolbarIcon } from "./toolbarIcons";
 import "./RightSidebar.css";
 
 type SidebarTab = "watchlist" | "symbol" | "objects";
@@ -92,7 +93,7 @@ export function RightSidebar() {
           title="Watchlist"
           onClick={() => toggle("watchlist")}
         >
-          <span className="rail-glyph">☰</span>
+          <ToolbarIcon name="watchlist" size={16} />
         </button>
         <button
           type="button"
@@ -100,7 +101,7 @@ export function RightSidebar() {
           title="Symbol Info"
           onClick={() => toggle("symbol")}
         >
-          <span className="rail-glyph">ⓘ</span>
+          <ToolbarIcon name="symbolinfo" size={16} />
         </button>
         <button
           type="button"
@@ -108,7 +109,7 @@ export function RightSidebar() {
           title="Object Tree - drawings on the focused chart"
           onClick={() => toggle("objects")}
         >
-          <span className="rail-glyph">▤</span>
+          <ToolbarIcon name="objecttree" size={16} />
         </button>
       </div>
       {openTab && (

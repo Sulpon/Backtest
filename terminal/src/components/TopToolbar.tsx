@@ -9,6 +9,7 @@ import { TIMEFRAMES, TIMEFRAME_LABELS } from "../data/timeframes";
 import type { Timeframe } from "../data/types";
 import { useSymbols } from "../data/useSymbols";
 import { applyChartLayout, countChartPanels } from "./chartLayout";
+import { ToolbarIcon } from "./toolbarIcons";
 import "./TopToolbar.css";
 
 /** Pane counts the layout picker offers - any dockview panel count works via
@@ -16,10 +17,10 @@ import "./TopToolbar.css";
 const LAYOUT_PANE_COUNTS = [1, 2, 4, 8, 16];
 
 type ChartType = "candles" | "line" | "area";
-const CHART_TYPES: { id: ChartType; glyph: string; label: string }[] = [
-  { id: "candles", glyph: "▤", label: "Candles" },
-  { id: "line", glyph: "╱", label: "Line" },
-  { id: "area", glyph: "◭", label: "Area" },
+const CHART_TYPES: { id: ChartType; label: string }[] = [
+  { id: "candles", label: "Candles" },
+  { id: "line", label: "Line" },
+  { id: "area", label: "Area" },
 ];
 
 export function TopToolbar() {
@@ -150,6 +151,14 @@ export function TopToolbar() {
     }
     setHint(`${CHART_TYPES.find((c) => c.id === type)?.label} chart type isn't wired up yet - Candles only for now`);
   }
+  // Same hover-opens/click-toggles flyout mechanics LeftToolRail.tsx uses for
+  // its own tool-group flyouts (.rail-group's onMouseEnter + a click toggle,
+  // .rail-flyout/.rail-flyout-item for the menu itself) - reused here rather
+  // than a second implementation. Only the flyout's positioning differs (see
+  // .tb-chart-type-group .rail-flyout in TopToolbar.css): the rail opens its
+  // flyout to the right of a vertical column, this one opens downward below
+  // a horizontal toolbar button.
+  const [chartTypeMenuOpen, setChartTypeMenuOpen] = useState(false);
 
   // Fullscreen is plain browser API, no app state of its own to own - this
   // only mirrors document.fullscreenElement so the button's active state
@@ -180,11 +189,6 @@ export function TopToolbar() {
     <div className="topbar">
       <div className="tb-group">
         <span className="tb-brand">◆ TERMINAL</span>
-      </div>
-
-      <div className="tb-sep" />
-
-      <div className="tb-group">
         <select
           className="tb-select"
           value={displaySymbol}
@@ -197,6 +201,11 @@ export function TopToolbar() {
             </option>
           ))}
         </select>
+      </div>
+
+      <div className="tb-sep" />
+
+      <div className="tb-group">
         <div className="tb-tf">
           {TIMEFRAMES.map((tf) => (
             <button
@@ -209,19 +218,60 @@ export function TopToolbar() {
             </button>
           ))}
         </div>
-        <div className="tb-tf tb-chart-type">
-          {CHART_TYPES.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              className={c.id === chartType ? "active" : ""}
-              title={c.id === "candles" ? "Candlestick chart" : `${c.label} chart - coming soon`}
-              onClick={() => pickChartType(c.id)}
-            >
-              {c.glyph}
-            </button>
-          ))}
+      </div>
+
+      <div className="tb-sep" />
+
+      <div className="tb-group">
+        <div
+          className="rail-group tb-chart-type-group"
+          onMouseEnter={() => setChartTypeMenuOpen(true)}
+          onMouseLeave={() => setChartTypeMenuOpen(false)}
+        >
+          <button
+            type="button"
+            className={`tb-btn tb-chart-type-btn${chartTypeMenuOpen ? " active" : ""}`}
+            title="Chart type"
+            onClick={() => setChartTypeMenuOpen((o) => !o)}
+          >
+            <ToolbarIcon name={`chart-${chartType}`} size={15} />
+            <span className="tb-caret">⌄</span>
+          </button>
+          {chartTypeMenuOpen && (
+            <div className="rail-flyout">
+              <div className="rail-flyout-title">Chart Type</div>
+              {CHART_TYPES.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`rail-flyout-item${c.id === chartType ? " active" : ""}${c.id === "candles" ? "" : " reserved"}`}
+                  title={c.id === "candles" ? "Candlestick chart" : `${c.label} chart - coming soon`}
+                  onClick={() => {
+                    pickChartType(c.id);
+                    // Mirrors LeftToolRail.tsx's own flyout: a live pick closes the
+                    // menu, a reserved ("Soon") pick just shows the hint and leaves
+                    // the flyout open so the user can pick a different option.
+                    if (c.id === "candles") setChartTypeMenuOpen(false);
+                  }}
+                >
+                  <span className="rail-flyout-main">
+                    <ToolbarIcon name={`chart-${c.id}`} size={15} />
+                    <span className="rail-flyout-label">{c.label}</span>
+                  </span>
+                  {c.id !== "candles" && <span className="reserved-badge">Soon</span>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
+        <button
+          type="button"
+          className={`tb-btn${analysisHubOpen ? " active" : ""}`}
+          title="Indicators & SMC overlays"
+          onClick={() => setAnalysisHubOpen(!analysisHubOpen)}
+        >
+          <ToolbarIcon name="indicators" size={15} />
+        </button>
       </div>
 
       <div className="tb-sep" />
@@ -245,7 +295,7 @@ export function TopToolbar() {
               else replay.armSetup();
             }}
           >
-            <span className="tb-glyph">⏵</span> Replay
+            <ToolbarIcon name="replay" size={15} /> Replay
           </button>
           {replay.setupArmed && <ReplaySetupMenu />}
         </div>
@@ -311,15 +361,7 @@ export function TopToolbar() {
 
       <div className="tb-group">
         <button type="button" className="tb-btn" title="Command palette (Ctrl/Cmd+K)" onClick={() => setCommandPaletteOpen(true)}>
-          ⌕
-        </button>
-        <button
-          type="button"
-          className={`tb-btn${analysisHubOpen ? " active" : ""}`}
-          title="Indicators & SMC overlays"
-          onClick={() => setAnalysisHubOpen(!analysisHubOpen)}
-        >
-          <span className="tb-glyph">Ω</span>
+          <ToolbarIcon name="search" size={15} />
         </button>
         <button
           type="button"
@@ -328,7 +370,7 @@ export function TopToolbar() {
           disabled={!dockviewApi}
           onClick={toggleWatchlist}
         >
-          <span className="tb-glyph">☰</span>
+          <ToolbarIcon name="watchlist" size={15} />
         </button>
         <button
           type="button"
@@ -336,10 +378,10 @@ export function TopToolbar() {
           title="Market Structure Dataset - your logged BOS/CHoCH drawings"
           onClick={() => setMarketStructureDatasetOpen(!marketStructureDatasetOpen)}
         >
-          <span className="tb-glyph">M</span>
+          <ToolbarIcon name="marketstructure" size={15} />
         </button>
         <button type="button" className="tb-btn" title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} onClick={toggleTheme}>
-          {theme === "dark" ? "☾" : "☼"}
+          <ToolbarIcon name={theme === "dark" ? "theme-moon" : "theme-sun"} size={15} />
         </button>
         <button
           type="button"
@@ -347,7 +389,7 @@ export function TopToolbar() {
           title="Settings"
           onClick={() => setSettingsOpen(!settingsOpen)}
         >
-          <span className="tb-glyph">⚙</span>
+          <ToolbarIcon name="settings" size={15} />
         </button>
         <button
           type="button"
@@ -355,7 +397,7 @@ export function TopToolbar() {
           title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
           onClick={toggleFullscreen}
         >
-          <span className="tb-glyph">{isFullscreen ? "⤢" : "⛶"}</span>
+          <ToolbarIcon name={isFullscreen ? "fullscreen-exit" : "fullscreen-enter"} size={15} />
         </button>
       </div>
     </div>

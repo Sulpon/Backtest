@@ -65,8 +65,12 @@
   pointer-events: none;
 }
 
-.tb-glyph {
-  line-height: 1;
+/* Icons inherit color from the button (currentColor), same reasoning as
+   .drawing-icon in LeftToolRail.css - hover/active/disabled keep working
+   unchanged with zero extra JS. */
+.toolbar-icon {
+  flex: 0 0 auto;
+  display: block;
 }
 
 .tb-select {
@@ -100,16 +104,29 @@
   color: var(--text);
 }
 
-.tb-chart-type {
-  /* Same pill group as .tb-tf but a visually distinct cluster (chart type,
-     not timeframe) - a touch more breathing room than the 4px .tb-group
-     gap keeps the two from reading as one merged control. */
-  margin-left: 4px;
+/* Chart-type control: a compact tb-btn (icon + caret) that opens a flyout
+   listing all 3 types - reuses LeftToolRail.css's .rail-group/.rail-flyout/
+   .rail-flyout-item classes for the flyout itself (identical hover-opens/
+   click-toggles mechanics and menu look), just overridden below to open
+   downward under a horizontal toolbar button instead of to the right of a
+   vertical rail column. */
+.tb-chart-type-group {
+  display: flex;
 }
 
-.tb-chart-type button {
-  font-size: 12px;
-  padding: 5px 8px;
+.tb-chart-type-btn {
+  gap: 4px;
+}
+
+.tb-caret {
+  font-size: 9px;
+  color: var(--text-faint);
+  line-height: 1;
+}
+
+.tb-chart-type-group .rail-flyout {
+  left: 0;
+  top: calc(100% + 4px);
 }
 
 .tb-rr-label {

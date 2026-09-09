@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { dataLayer } from "../../data/DataLayer";
 import { useActiveWorkspace, useWorkspaceStore } from "../../workspace/workspaceStore";
-import "./panels.css";
+import { groupSymbolsByCategory, type WatchlistCategory } from "./watchlistGrouping";
+import "./WatchlistPanel.css";
 
 interface Row {
   symbol: string;
@@ -13,6 +14,10 @@ export function WatchlistPanel() {
   const ws = useActiveWorkspace();
   const setSymbol = useWorkspaceStore((s) => s.setSymbol);
   const [rows, setRows] = useState<Row[]>([]);
+  // Local, unpersisted collapse state per category - out of scope to persist
+  // this (no per-user watchlist settings model exists), so every section
+  // just starts expanded on mount like TradingView's own default.
+  const [collapsed, setCollapsed] = useState<Record<WatchlistCategory, boolean>>({ Forex: false, Metals: false });
 
   useEffect(() => {
     let cancelled = false;
@@ -34,39 +39,43 @@ export function WatchlistPanel() {
     };
   }, []);
 
+  const sections = groupSymbolsByCategory(rows);
+
   return (
-    <div className="panel-scroll">
-      <table className="panel-table">
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Last</th>
-            <th>Chg</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr
-              key={r.symbol}
-              className={r.symbol === ws.symbol ? "active" : ""}
-              onClick={() => setSymbol(r.symbol)}
+    <div className="wl-scroll">
+      {sections.map(([category, categoryRows]) => {
+        const isCollapsed = collapsed[category];
+        return (
+          <div key={category}>
+            <button
+              type="button"
+              className="wl-section-header"
+              onClick={() => setCollapsed((c) => ({ ...c, [category]: !c[category] }))}
             >
-              <td>{r.symbol}</td>
-              <td className="mono">{r.last != null ? r.last.toFixed(5) : "—"}</td>
-              <td className={`mono ${r.changePct != null && r.changePct >= 0 ? "pos" : "neg"}`}>
-                {r.changePct != null ? `${r.changePct >= 0 ? "+" : ""}${r.changePct.toFixed(2)}%` : "—"}
-              </td>
-            </tr>
-          ))}
-          {rows.length === 0 && (
-            <tr>
-              <td colSpan={3} className="panel-empty">
-                Loading…
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+              <span className={`wl-section-caret${isCollapsed ? " collapsed" : ""}`}>▾</span>
+              {category.toUpperCase()}
+            </button>
+            {!isCollapsed &&
+              categoryRows.map((r) => (
+                <button
+                  key={r.symbol}
+                  type="button"
+                  className={`wl-row${r.symbol === ws.symbol ? " active" : ""}`}
+                  onClick={() => setSymbol(r.symbol)}
+                >
+                  <span className="wl-row-symbol">{r.symbol}</span>
+                  <span className="wl-row-prices">
+                    <span className="wl-row-last">{r.last != null ? r.last.toFixed(5) : "—"}</span>
+                    <span className={`wl-row-change ${r.changePct != null && r.changePct >= 0 ? "pos" : "neg"}`}>
+                      {r.changePct != null ? `${r.changePct >= 0 ? "+" : ""}${r.changePct.toFixed(2)}%` : "—"}
+                    </span>
+                  </span>
+                </button>
+              ))}
+          </div>
+        );
+      })}
+      {rows.length === 0 && <div className="wl-empty">Loading…</div>}
     </div>
   );
 }
