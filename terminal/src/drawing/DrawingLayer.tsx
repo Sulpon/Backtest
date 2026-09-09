@@ -33,12 +33,26 @@ interface DrawingLayerProps {
   series: ISeriesApi<"Candlestick">;
   bars: CandleBar[];
   paneKey: string;
+  /** Right-click on chart canvas with no drawing under the cursor - lets
+   * ChartPane.tsx own a general chart context menu (Reset Chart/Auto
+   * Scale/Zoom/Remove drawings) without this file knowing anything about
+   * it. Optional so every other DrawingLayer usage (there is only one
+   * today, but nothing here should require a caller to opt in) keeps
+   * working unchanged. */
+  onEmptyAreaContextMenu?: (x: number, y: number) => void;
 }
 
-export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: DrawingLayerProps) {
+export function DrawingLayer({ containerEl, chart, series, bars, paneKey, onEmptyAreaContextMenu }: DrawingLayerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const barsRef = useRef(bars);
   barsRef.current = bars;
+  // Mirrors barsRef/paneKeyRef's own pattern - the mousedown/contextmenu
+  // effect below deliberately has a non-exhaustive dep array ([containerEl,
+  // chart, series]), so a prop read straight from the closure would go
+  // stale if ChartPane.tsx ever passes a new function identity across
+  // renders without this effect re-running to pick it up.
+  const onEmptyAreaContextMenuRef = useRef(onEmptyAreaContextMenu);
+  onEmptyAreaContextMenuRef.current = onEmptyAreaContextMenu;
   const paneKeyRef = useRef(paneKey);
   paneKeyRef.current = paneKey;
 
@@ -597,6 +611,12 @@ export function DrawingLayer({ containerEl, chart, series, bars, paneKey }: Draw
       const hit = hitTestAll(x, y);
       if (!hit) {
         setMenu(null);
+        // No drawing under the cursor - this is ChartPane.tsx's general
+        // chart context menu's territory, not this file's. Still suppress
+        // the browser's native menu (that's the whole point of this task),
+        // just hand off instead of showing DrawingContextMenu.
+        e.preventDefault();
+        onEmptyAreaContextMenuRef.current?.(e.clientX, e.clientY);
         return;
       }
       e.preventDefault();

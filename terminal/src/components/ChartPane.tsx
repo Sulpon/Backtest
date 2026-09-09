@@ -25,7 +25,8 @@ import { chartOptions, candleOptions, paletteColor, panelBackgroundColor } from 
 import { useChartRegistry, type ChartSnapshotWindow } from "./chartRegistry";
 import { compositeSnapshot, drawTradeAnnotations } from "./chartSnapshot";
 import { DrawingLayer } from "../drawing/DrawingLayer";
-import { paneKey } from "../drawing/drawingStore";
+import { paneKey, useDrawingStore } from "../drawing/drawingStore";
+import type { DrawingObject } from "../drawing/types";
 import { useReplayStore } from "../replay/replayStore";
 import { applyReplayCursor, computeLiveStats } from "../replay/applyCursor";
 import { ReplayBar } from "../replay/ReplayBar";
@@ -45,6 +46,9 @@ import { usePineTradeOverridesStore } from "../pine/pineTradeOverridesStore";
 import { nearestIndexByTime } from "../lib/bars";
 import { toggleLegendIndicator } from "./indicatorLegend";
 import { defaultVisibleRangeIndices } from "./chartVisibleRange";
+import { computeRangeIndices, type ChartRangePreset } from "./chartRangePresets";
+import { ChartRangeControls } from "./ChartRangeControls";
+import { ChartContextMenu, type ChartContextMenuGroups } from "./ChartContextMenu";
 import "./ChartPane.css";
 
 const FVG_FORWARD_BARS = 20;
@@ -60,6 +64,12 @@ const FVG_FORWARD_BARS = 20;
 // bars) to a small fraction of that, without truncating anything the user
 // actually sees first.
 const INITIAL_WINDOW_BARS = 3000;
+
+// A stable, shared reference for "this pane currently has zero drawings" -
+// see its own use below for why a fresh `[]` literal per selector call
+// would infinite-loop useSyncExternalStore. Mirrors drawing/
+// DrawingObjectTree.tsx's own EMPTY_DRAWINGS constant exactly.
+const EMPTY_PANE_DRAWINGS: DrawingObject[] = [];
 
 function asTime(sec: number): Time {
   return sec as UTCTimestamp;
@@ -254,6 +264,20 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   // means "crosshair isn't over the chart right now" - the header then
   // falls back to the last bar, same as the chart's own default view does.
   const [hoveredBarIdx, setHoveredBarIdx] = useState<number | null>(null);
+  // General chart context menu (Reset Chart/Auto Scale/Zoom/remove
+  // drawings) - only ever set from DrawingLayer's onEmptyAreaContextMenu
+  // callback (a right-click that hit no drawing), never from a drawing's
+  // own right-click menu, which DrawingLayer already owns entirely itself.
+  const [chartMenu, setChartMenu] = useState<{ x: number; y: number } | null>(null);
+  // Which range-control button (if any) reads as "selected". Purely a
+  // display concern - the real state is always the chart's own visible
+  // range; this just remembers which preset last produced it, and is
+  // deliberately cleared on symbol/timeframe change below (a range that
+  // made sense for the old dataset may not even exist in the new one).
+  const [activeRangePreset, setActiveRangePreset] = useState<ChartRangePreset | null>(null);
+  useEffect(() => {
+    setActiveRangePreset(null);
+  }, [paneSymbol, paneTimeframe]);
   // Only ever the COMPLETE dataset, per this ref's own contract (relied on
   // by takeSnapshot() and the replay-cursor-follow effect below) - never
   // the transient fast-paint window. While only the window has landed,
@@ -770,7 +794,7 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     // regardless of how capture finishes.
     const originalTheme = themeRef.current;
     themeRef.current = "dark";
-    chart.applyOptions(chartOptions("dark", chartFontSizeRef.current));
+    chart.applyOptions(chartOptions("dark", chartFontSizeRef.current, paneTimeframe));
     series.applyOptions(candleOptions("dark"));
     const originalSmcVisible = smcVisibleRef.current;
     smcVisibleRef.current = { ...originalSmcVisible, bos: true, choch: true };
@@ -845,7 +869,7 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
       return compositeSnapshot(chartCanvas, pineCanvas, annotationCanvas, panelBackgroundColor("dark"));
     } finally {
       themeRef.current = originalTheme;
-      chart.applyOptions(chartOptions(originalTheme, chartFontSizeRef.current));
+      chart.applyOptions(chartOptions(originalTheme, chartFontSizeRef.current, paneTimeframe));
       series.applyOptions(candleOptions(originalTheme));
       smcVisibleRef.current = originalSmcVisible;
       if (wasReplaySliced && renderedBeforeCapture) {
@@ -887,7 +911,7 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
-      ...chartOptions(themeRef.current, chartFontSizeRef.current),
+      ...chartOptions(themeRef.current, chartFontSizeRef.current, paneTimeframe),
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
     });
@@ -1002,11 +1026,11 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
   // built-in/custom indicator list changes, and whenever the replay-setup
   // picked bar changes (the "Start" marker renderMarkers draws for it)
   useEffect(() => {
-    chartRef.current?.applyOptions(chartOptions(theme, chartFontSize));
+    chartRef.current?.applyOptions(chartOptions(theme, chartFontSize, paneTimeframe));
     seriesRef.current?.applyOptions(candleOptions(theme));
     renderOverlays(); // also renders markers - see renderMarkers' own doc comment
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [theme, smcVisible, sessionsVisible, chartFontSize, indicators, customIndicators, pendingBar]);
+  }, [theme, smcVisible, sessionsVisible, chartFontSize, indicators, customIndicators, pendingBar, paneTimeframe]);
 
   // fetch data on symbol/timeframe change. Normally two requests fire
   // concurrently: a small, fast window for an immediate paint, and the
@@ -1291,6 +1315,105 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
     ...pineIndicatorItems.map((ind) => ({ id: `pine-${ind.id}`, label: ind.name, color: "#4f8cff", visible: ind.visible })),
   ];
 
+  // ---- chart context menu + range controls ----
+  // All of these read dataRef.current (the bars actually pushed into the
+  // series right now - see the setData effect above) rather than
+  // latestDataRef.current (the true, un-replay-limited full dataset). That
+  // one choice is what makes every action below replay-correct for free:
+  // during replay, dataRef.current is already sliced to the replay cursor
+  // (applyReplayCursor, in the [replayActive, cursorBar, jumpNonce] effect
+  // above), so "ALL"/"1Y"/etc reading from it can never reveal a bar replay
+  // hasn't reached yet - no separate replay-awareness needed here.
+
+  function resetChartView() {
+    const bars = dataRef.current?.bars;
+    if (!chartRef.current || !bars) return;
+    const range = defaultVisibleRangeIndices(bars.length);
+    if (!range) return;
+    chartRef.current.timeScale().setVisibleRange({ from: asTime(bars[range.from].time), to: asTime(bars[range.to].time) });
+    setActiveRangePreset(null);
+  }
+
+  function applyRangePreset(preset: ChartRangePreset) {
+    const bars = dataRef.current?.bars;
+    if (!chartRef.current || !bars) return;
+    const range = computeRangeIndices(bars.map((b) => b.time), preset);
+    if (!range) return;
+    chartRef.current.timeScale().setVisibleRange({ from: asTime(bars[range.from].time), to: asTime(bars[range.to].time) });
+    setActiveRangePreset(preset);
+  }
+
+  // Native getVisibleLogicalRange()/setVisibleLogicalRange() - lightweight-
+  // charts' own API for programmatic range manipulation (see that method's
+  // own docs: "if you can approximate indexes on your own - you could use
+  // setVisibleLogicalRange instead"). Narrows/widens symmetrically around
+  // the range's own center, never touches candle data.
+  function zoomChart(direction: "in" | "out") {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const vr = chart.timeScale().getVisibleLogicalRange();
+    if (!vr) return;
+    const span = vr.to - vr.from;
+    const center = (vr.to + vr.from) / 2;
+    const factor = direction === "in" ? 0.75 : 1 / 0.75;
+    const half = (span * factor) / 2;
+    chart.timeScale().setVisibleLogicalRange({ from: center - half, to: center + half });
+    setActiveRangePreset(null);
+  }
+
+  // Native price-scale autoscaling, not a manually computed min/max - see
+  // rightPriceScale's own `autoScale` option (lightweight-charts already
+  // defaults to autoScale:true; this just re-asserts it for the case where
+  // a user had dragged the price axis into a fixed/manual scale, the only
+  // situation where "Auto Scale" as a distinct action has anything to do).
+  function autoScaleChart() {
+    seriesRef.current?.priceScale().applyOptions({ autoScale: true });
+  }
+
+  const thisPaneKey = paneKey(paneSymbol, paneTimeframe);
+  const selectedDrawingIds = useDrawingStore((s) => s.selectedIds);
+  // EMPTY_PANE_DRAWINGS (module-scope, see below) rather than an inline
+  // `?? []` - and .map() happens OUTSIDE the selector, at plain render
+  // time, not inside it. Either one alone (a fresh `[]` literal per call,
+  // or a fresh .map() result per call) makes useSyncExternalStore see "the
+  // snapshot changed" on every single render and infinite-loop - the exact
+  // bug drawing/DrawingObjectTree.tsx's own EMPTY_DRAWINGS comment already
+  // documents fixing, reproduced and fixed here the same way.
+  const paneDrawings = useDrawingStore((s) => s.byPane[thisPaneKey] ?? EMPTY_PANE_DRAWINGS);
+  const paneDrawingIds = paneDrawings.map((d) => d.id);
+  // Never trusts selectedIds alone - the store's selection is global, not
+  // pane-scoped (see drawing/DrawingLayer.tsx's own keyboard handler, which
+  // gates on "is MY pane the active one" the same way) - intersecting with
+  // this pane's own drawing ids is what guarantees this can never remove a
+  // drawing belonging to a different pane.
+  const selectedInThisPane = selectedDrawingIds.filter((id) => paneDrawingIds.includes(id));
+
+  function removeSelectedDrawing() {
+    if (selectedInThisPane.length === 0) return;
+    useDrawingStore.getState().remove(thisPaneKey, selectedInThisPane);
+  }
+
+  function removeAllDrawings() {
+    if (paneDrawingIds.length === 0) return;
+    useDrawingStore.getState().remove(thisPaneKey, paneDrawingIds);
+  }
+
+  const chartMenuGroups: ChartContextMenuGroups = [
+    [
+      { label: "Reset Chart", onSelect: resetChartView },
+      { label: "Auto Scale", onSelect: autoScaleChart },
+    ],
+    [
+      { label: "Zoom In", onSelect: () => zoomChart("in") },
+      { label: "Zoom Out", onSelect: () => zoomChart("out") },
+      { label: "Reset View", onSelect: resetChartView },
+    ],
+    [
+      { label: "Remove Selected Drawing", onSelect: removeSelectedDrawing, disabled: selectedInThisPane.length === 0 },
+      { label: "Remove All Drawings", onSelect: removeAllDrawings, disabled: paneDrawingIds.length === 0, danger: true },
+    ],
+  ];
+
   return (
     <div className="chart-pane">
       <div className="pane-header">
@@ -1382,10 +1505,15 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
             series={seriesRef.current}
             bars={data.bars}
             paneKey={paneKey(paneSymbol, paneTimeframe)}
+            onEmptyAreaContextMenu={(x, y) => setChartMenu({ x, y })}
           />
         )}
         {status === "loading" && <div className="pane-overlay-msg">Loading {paneSymbol}…</div>}
         {status === "error" && <div className="pane-overlay-msg error">Couldn't load data for {paneSymbol}</div>}
+        {chartReady && data && data.bars.length > 0 && (
+          <ChartRangeControls active={activeRangePreset} onSelect={applyRangePreset} />
+        )}
+        {chartMenu && <ChartContextMenu x={chartMenu.x} y={chartMenu.y} groups={chartMenuGroups} onClose={() => setChartMenu(null)} />}
         {chartReady && (
           <button
             type="button"
