@@ -1386,6 +1386,19 @@ export function ChartPane(props: IDockviewPanelProps<ChartPaneParams>) {
         )}
         {status === "loading" && <div className="pane-overlay-msg">Loading {paneSymbol}…</div>}
         {status === "error" && <div className="pane-overlay-msg error">Couldn't load data for {paneSymbol}</div>}
+        {chartReady && (
+          <button
+            type="button"
+            className="pane-scroll-latest"
+            title="Scroll to the most recent bar"
+            onClick={() => chartRef.current?.timeScale().scrollToRealTime()}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="7,5 13,12 7,19" />
+              <polyline points="14,5 20,12 14,19" />
+            </svg>
+          </button>
+        )}
         {isPrimary && <ReplayBar />}
       </div>
     </div>

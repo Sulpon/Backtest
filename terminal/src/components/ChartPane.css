@@ -210,3 +210,25 @@
 .pane-overlay-msg.error {
   color: var(--danger);
 }
+
+.pane-scroll-latest {
+  position: absolute;
+  right: 54px; /* clears lightweight-charts' own right price-scale gutter */
+  bottom: 26px; /* clears the time-scale axis labels */
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  z-index: 4;
+}
+
+.pane-scroll-latest:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
