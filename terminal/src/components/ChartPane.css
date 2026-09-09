@@ -11,7 +11,12 @@
   align-items: center;
   gap: var(--space-2);
   padding: 4px 8px;
-  background: var(--bg-panel-2);
+  /* var(--bg-panel), not --bg-panel-2 - the chart canvas underneath now
+     renders near-black (chartTheme.ts), so the header stays close to it
+     rather than one elevation step lighter, reading as a flush extension
+     of the chart (border-bottom alone marks the boundary) instead of a
+     separate box sitting on top of it. */
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
   font-size: 11px;

@@ -1,4 +1,4 @@
-import { CrosshairMode, type DeepPartial, type ChartOptions } from "lightweight-charts";
+import { CrosshairMode, LineStyle, type DeepPartial, type ChartOptions } from "lightweight-charts";
 import type { ThemeName } from "../theme/ThemeProvider";
 
 /**
@@ -13,27 +13,40 @@ import type { ThemeName } from "../theme/ThemeProvider";
  */
 const PALETTE: Record<ThemeName, {
   bgPanel: string;
+  bgElevated: string;
   textDim: string;
   border: string;
   borderStrong: string;
+  gridLine: string;
   bull: string;
   bear: string;
   highlight: string;
 }> = {
   dark: {
-    bgPanel: "#10141b",
+    // Near-black, not the panel-chrome bg-panel navy - the chart canvas
+    // itself should read closer to TradingView's bare-black plot area,
+    // distinct from (darker than) the UI chrome around it.
+    bgPanel: "#070809",
+    bgElevated: "#1c222d",
     textDim: "#838d9e",
     border: "rgba(255,255,255,0.08)",
     borderStrong: "rgba(255,255,255,0.16)",
+    // Dimmer than `border` deliberately - the TradingView reference this
+    // was compared against shows no visibly distinct grid lines at all;
+    // near-invisible (rather than fully removed) keeps a faint reference
+    // grid for reading price/time without it competing with candles.
+    gridLine: "rgba(255,255,255,0.035)",
     bull: "#26a69a",
     bear: "#ef5350",
     highlight: "#e0a64c",
   },
   light: {
     bgPanel: "#ffffff",
+    bgElevated: "#e7eaf0",
     textDim: "#565f70",
     border: "rgba(10,13,18,0.1)",
     borderStrong: "rgba(10,13,18,0.2)",
+    gridLine: "rgba(10,13,18,0.1)", // unchanged from `border` - light theme wasn't part of this comparison
     bull: "#0f8f83",
     bear: "#d4453f",
     highlight: "#a8752a",
@@ -51,12 +64,20 @@ export function chartOptions(theme: ThemeName, fontSize = 11): DeepPartial<Chart
       attributionLogo: false,
     },
     grid: {
-      vertLines: { color: p.border },
-      horzLines: { color: p.border },
+      vertLines: { color: p.gridLine },
+      horzLines: { color: p.gridLine },
     },
     rightPriceScale: { borderColor: p.borderStrong },
     timeScale: { borderColor: p.borderStrong, timeVisible: true },
-    crosshair: { mode: CrosshairMode.Normal },
+    // Thin, low-contrast dashed lines and a compact label chip - the
+    // library's own defaults (mid-gray, unthemed) don't track light/dark
+    // mode. Matches the rest of the chart's subtle-hairline language
+    // (grid lines already use `p.border`) rather than standing out.
+    crosshair: {
+      mode: CrosshairMode.Normal,
+      vertLine: { color: p.borderStrong, width: 1, style: LineStyle.Dashed, labelBackgroundColor: p.bgElevated },
+      horzLine: { color: p.borderStrong, width: 1, style: LineStyle.Dashed, labelBackgroundColor: p.bgElevated },
+    },
   };
 }
 

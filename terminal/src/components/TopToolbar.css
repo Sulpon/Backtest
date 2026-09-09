@@ -100,6 +100,13 @@
   color: var(--text);
 }
 
+.tb-chart-type {
+  /* Same pill group as .tb-tf but a visually distinct cluster (chart type,
+     not timeframe) - a touch more breathing room than the 4px .tb-group
+     gap keeps the two from reading as one merged control. */
+  margin-left: 4px;
+}
+
 .tb-chart-type button {
   font-size: 12px;
   padding: 5px 8px;
